@@ -3,14 +3,16 @@
 //! This crate holds the business logic shared by the daemon and the CLI. It
 //! must stay independent from Tauri and from any graphical interface.
 //!
-//! Current scope (milestone M0):
+//! Modules:
 //! - [`config`]: typed global configuration (`config.toml`).
 //! - [`error`]: the crate-wide [`Error`] type and error reporting helpers.
-//! - [`logging`]: `tracing` subscriber initialisation.
+//! - [`instance`]: single-instance lock of the daemon.
+//! - [`logging`]: `tracing` subscriber initialisation (stderr, rolling files).
 //! - [`ensure_unprivileged`]: guard refusing elevated execution.
 
 pub mod config;
 pub mod error;
+pub mod instance;
 pub mod logging;
 
 pub use devspace_platform::AppPaths;

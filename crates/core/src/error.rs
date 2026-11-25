@@ -89,6 +89,33 @@ pub enum Error {
         source: tracing_subscriber::filter::ParseError,
     },
 
+    /// The rolling log file could not be opened.
+    #[error("failed to open log files in `{}`", dir.display())]
+    LogFile {
+        /// Log directory.
+        dir: PathBuf,
+        /// Appender initialisation error.
+        #[source]
+        source: tracing_appender::rolling::InitError,
+    },
+
+    /// Another daemon instance holds the single-instance lock.
+    #[error("another DevSpace daemon is already running (lock `{}` is held)", path.display())]
+    AlreadyRunning {
+        /// Lock file.
+        path: PathBuf,
+    },
+
+    /// The single-instance lock file could not be opened or locked.
+    #[error("failed to lock `{}`", path.display())]
+    InstanceLock {
+        /// Lock file.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
     /// A global `tracing` subscriber was already installed.
     #[error("logging is already initialised")]
     LoggingAlreadyInitialised(#[source] tracing::subscriber::SetGlobalDefaultError),

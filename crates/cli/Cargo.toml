@@ -12,7 +12,11 @@ path = "src/main.rs"
 
 [dependencies]
 devspace-core.workspace = true
+devspace-ipc.workspace = true
+devspace-platform.workspace = true
 clap.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "time"] }
 tracing.workspace = true
 
 [lints]

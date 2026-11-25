@@ -1,8 +1,8 @@
 //! Detection of elevated execution (root on Unix, administrator on Windows).
 //!
 //! DevSpace's main processes (daemon, CLI, desktop) must never run elevated.
-//! Privileged operations will be isolated in a dedicated helper in a later
-//! milestone.
+//! Privileged operations will be isolated in a dedicated helper (milestone
+//! M3).
 
 use crate::PlatformError;
 
@@ -19,16 +19,26 @@ pub fn is_elevated() -> Result<bool, PlatformError> {
     imp::is_elevated()
 }
 
+/// Effective user id of the current process.
+#[cfg(unix)]
+pub(crate) fn effective_uid() -> libc::uid_t {
+    imp::effective_uid()
+}
+
 #[cfg(unix)]
 mod imp {
     use crate::PlatformError;
 
     #[allow(unsafe_code)]
-    pub(super) fn is_elevated() -> Result<bool, PlatformError> {
+    pub(super) fn effective_uid() -> libc::uid_t {
         // SAFETY: `geteuid` takes no arguments, has no preconditions and
         // always succeeds (POSIX.1-2008).
-        let euid = unsafe { libc::geteuid() };
-        Ok(euid == 0)
+        unsafe { libc::geteuid() }
+    }
+
+    #[allow(clippy::unnecessary_wraps)]
+    pub(super) fn is_elevated() -> Result<bool, PlatformError> {
+        Ok(effective_uid() == 0)
     }
 }
 

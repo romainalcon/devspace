@@ -1,14 +1,20 @@
 //! `devspace` command-line interface.
 //!
-//! In milestone M0 the CLI only exposes local, read-mostly commands working on
-//! the global configuration and the application directories. Commands driving
-//! the daemon arrive with the IPC protocol (M1).
+//! Local commands (`paths`, `config`) work without the daemon; `daemon`
+//! commands manage the daemon lifecycle through the IPC protocol.
+
+mod daemon;
+mod error;
 
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use devspace_core::config::GlobalConfig;
-use devspace_core::{AppPaths, Result, error, logging};
+use devspace_core::logging::{self, LogTargets};
+use devspace_core::{AppPaths, error::report};
+
+use crate::daemon::DaemonCommand;
+use crate::error::CliError;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -28,6 +34,9 @@ enum Command {
     /// Inspect or initialise the global configuration.
     #[command(subcommand)]
     Config(ConfigCommand),
+    /// Manage the DevSpace daemon.
+    #[command(subcommand)]
+    Daemon(DaemonCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -43,15 +52,15 @@ enum ConfigCommand {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match run(cli) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(err) => {
-            eprintln!("error: {}", error::report(&err));
+            eprintln!("error: {}", report(&err));
             ExitCode::FAILURE
         }
     }
 }
 
-fn run(cli: Cli) -> Result<()> {
+fn run(cli: Cli) -> Result<ExitCode, CliError> {
     devspace_core::ensure_unprivileged()?;
     let paths = AppPaths::resolve()?;
     // `paths` and `config path` must keep working with a broken config file,
@@ -61,7 +70,7 @@ fn run(cli: Cli) -> Result<()> {
         .as_ref()
         .map(|c| c.logging.clone())
         .unwrap_or_default();
-    logging::init(&logging_config)?;
+    logging::init(&logging_config, &LogTargets::stderr_only())?;
 
     match cli.command {
         Command::Paths => {
@@ -69,6 +78,7 @@ fn run(cli: Cli) -> Result<()> {
             println!("data:   {}", paths.data_dir.display());
             println!("cache:  {}", paths.cache_dir.display());
             println!("logs:   {}", paths.log_dir.display());
+            println!("run:    {}", paths.runtime_dir.display());
         }
         Command::Config(ConfigCommand::Path) => println!("{}", paths.config_file().display()),
         Command::Config(ConfigCommand::Show) => print!("{}", config?.to_toml()?),
@@ -79,8 +89,9 @@ fn run(cli: Cli) -> Result<()> {
             tracing::info!(path = %file.display(), "configuration file created");
             println!("created {}", file.display());
         }
+        Command::Daemon(command) => return daemon::execute(command, &paths),
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 #[cfg(test)]

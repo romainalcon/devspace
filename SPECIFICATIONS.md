@@ -29,8 +29,8 @@ binaries and **without requiring Docker**.
 
 ## Functional requirements
 
-Requirements are tagged with the milestone delivering them. Only M0 items are
-implemented today.
+Requirements are tagged with the milestone delivering them. M0 and M1 items
+are implemented today.
 
 ### Implemented (M0)
 
@@ -44,11 +44,25 @@ implemented today.
 | F-0.6 | `DEVSPACE_HOME` (absolute path) relocates every directory. |
 | F-0.7 | `DEVSPACE_LOG` overrides the configured log filter. |
 
+`devspaced` (F-0.5) now continues with the M1 behaviour below.
+
+### Implemented (M1)
+
+| ID | Requirement |
+|---|---|
+| F-1.1 | `devspace daemon start` starts `devspaced` in the background, detached from the terminal, and returns once it accepts connections (10 s limit). It succeeds without action if the daemon already runs. If the daemon exits during startup, its error and the log directory are printed. |
+| F-1.2 | `devspace daemon stop` asks the daemon to shut down and returns once it has exited (10 s limit). It succeeds without action if the daemon is not running. |
+| F-1.3 | `devspace daemon status` prints status, pid, version, uptime, endpoint and log directory. Exit code `0` when running, `3` when not running, `1` on error (including a process holding the lock without answering). |
+| F-1.4 | Only one daemon runs per runtime directory; a second instance exits with "already running". A crashed daemon never prevents a restart. |
+| F-1.5 | The daemon stops gracefully on `Shutdown` requests and on `SIGINT`/`SIGTERM`/`SIGHUP` (Unix) or console events (Windows): the endpoint disappears first, open connections get up to 5 s. |
+| F-1.6 | The IPC endpoint is only usable by the user running the daemon (OS permissions plus peer identity checks on both sides). |
+| F-1.7 | The daemon writes daily-rotated logs to the log directory and keeps 7 files; `devspaced` run directly also logs to stderr. |
+| F-1.8 | `devspace paths` also prints the runtime directory. |
+
 ### Planned
 
 | ID | Milestone | Requirement |
 |---|---|---|
-| F-1 | M1 | Daemon runs in the background, exposes a versioned IPC API over Unix domain sockets / Windows named pipes, restricted to the owning user. |
 | F-2 | M2 | Project registry persisted in SQLite: add, list, remove projects. |
 | F-3 | M3 | Caddy-based reverse proxy with `*.test` domains and a locally trusted CA, configured through an isolated privileged helper after explicit approval. |
 | F-4 | M4 | Runtime package manager: download, verify checksums and signatures, extract safely (no path traversal), switch versions. |
@@ -68,6 +82,30 @@ format = "compact"        # compact | pretty
 Rules: all keys optional, unknown keys rejected, file never overwritten by
 DevSpace.
 
+## IPC protocol reference (version 1)
+
+Frames: 4-byte big-endian payload length, then a UTF-8 JSON object; payloads
+over 1 MiB are rejected. Every message carries a `type` tag.
+
+| Direction | `type` | Fields |
+|---|---|---|
+| client → daemon | `hello` | `protocol_version`, `client: {name, version}` — first message |
+| daemon → client | `welcome` | `protocol_version`, `daemon: {version, pid}` |
+| daemon → client | `rejected` | `protocol_version`, `message` — then the connection closes |
+| client → daemon | `request` | `id` (u64, echoed), `request: {method, …}` |
+| daemon → client | `response` | `id`, `response: {kind, …}` |
+
+| `method` | Response `kind` |
+|---|---|
+| `ping` | `pong` |
+| `status` | `status` with `version`, `pid`, `uptime_secs` |
+| `shutdown` | `shutting_down`, then the daemon stops |
+
+Rules: `hello` must come first and within 5 s; unknown or malformed messages
+close the connection; the handshake messages never change shape and any
+other change increments the protocol version; peers only talk when versions
+are equal.
+
 ## Non-functional requirements
 
 ### Platforms
@@ -82,7 +120,8 @@ No platform-specific command or path may be assumed outside
   enforced at startup (M0).
 - Privileged operations are isolated in a minimal helper and require explicit
   user approval.
-- IPC clients are authenticated with OS-level permissions and peer identity.
+- IPC clients are authenticated with OS-level permissions and peer identity
+  (M1); the daemon is also authenticated by its clients.
 - Downloaded packages are verified (checksum and signature) before use;
   archives are extracted without path traversal.
 - Services listen on loopback only by default.

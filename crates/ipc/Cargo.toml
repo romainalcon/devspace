@@ -6,9 +6,15 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
-# Dependencies (serde, tokio, transport) will be added in milestone M1 when the
-# protocol is designed. The crate is intentionally empty in M0.
 [dependencies]
+devspace-platform.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "io-util", "time", "test-util"] }
 
 [lints]
 workspace = true

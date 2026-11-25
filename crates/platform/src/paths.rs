@@ -8,10 +8,14 @@
 //! | data   | `~/Library/Application Support/DevSpace/data`   | `$XDG_DATA_HOME/devspace`             | `%LOCALAPPDATA%\DevSpace\data`       |
 //! | cache  | `~/Library/Caches/DevSpace`                     | `$XDG_CACHE_HOME/devspace`            | `%LOCALAPPDATA%\DevSpace\cache`      |
 //! | logs   | `~/Library/Logs/DevSpace`                       | `$XDG_STATE_HOME/devspace/logs`       | `%LOCALAPPDATA%\DevSpace\logs`       |
+//! | run    | `~/Library/Application Support/DevSpace/run`    | `$XDG_RUNTIME_DIR/devspace`           | `%LOCALAPPDATA%\DevSpace\run`        |
+//!
+//! On Linux, when `XDG_RUNTIME_DIR` is unset, the runtime directory falls back
+//! to `<data>/run`.
 //!
 //! Setting the `DEVSPACE_HOME` environment variable to an absolute path
 //! replaces the whole layout with `config/`, `data/`, `cache/` and `logs/`
-//! sub-directories of that path (useful for tests, CI and portable setups).
+//! sub-directories of that path, plus `run/` (useful for tests, CI and portable setups).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -24,6 +28,9 @@ pub const HOME_ENV_VAR: &str = "DEVSPACE_HOME";
 /// File name of the global configuration inside [`AppPaths::config_dir`].
 pub const CONFIG_FILE_NAME: &str = "config.toml";
 
+/// File name of the daemon single-instance lock inside [`AppPaths::runtime_dir`].
+pub const DAEMON_LOCK_FILE_NAME: &str = "devspaced.lock";
+
 /// Directories used by DevSpace for the current user.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppPaths {
@@ -35,6 +42,10 @@ pub struct AppPaths {
     pub cache_dir: PathBuf,
     /// Log files.
     pub log_dir: PathBuf,
+    /// Private runtime state of the daemon (IPC socket, instance lock).
+    ///
+    /// Always restricted to the current user; see [`AppPaths::ensure_exists`].
+    pub runtime_dir: PathBuf,
 }
 
 /// Target operating system family, used to select the directory layout.
@@ -75,6 +86,8 @@ pub struct BaseLocations {
     pub cache: PathBuf,
     /// State base (`$XDG_STATE_HOME` on Linux, unavailable elsewhere).
     pub state: Option<PathBuf>,
+    /// Runtime base (`$XDG_RUNTIME_DIR` on Linux, unavailable elsewhere).
+    pub runtime: Option<PathBuf>,
     /// User home directory.
     pub home: PathBuf,
 }
@@ -94,6 +107,7 @@ impl BaseLocations {
             data_local: base.data_local_dir().to_path_buf(),
             cache: base.cache_dir().to_path_buf(),
             state: base.state_dir().map(Path::to_path_buf),
+            runtime: base.runtime_dir().map(Path::to_path_buf),
             home: base.home_dir().to_path_buf(),
         })
     }
@@ -127,6 +141,7 @@ impl AppPaths {
             data_dir: root.join("data"),
             cache_dir: root.join("cache"),
             log_dir: root.join("logs"),
+            runtime_dir: root.join("run"),
         }
     }
 
@@ -141,6 +156,7 @@ impl AppPaths {
                     data_dir: app_support.join("data"),
                     cache_dir: base.cache.join("DevSpace"),
                     log_dir: base.home.join("Library").join("Logs").join("DevSpace"),
+                    runtime_dir: app_support.join("run"),
                 }
             }
             OsFamily::Windows => {
@@ -150,6 +166,7 @@ impl AppPaths {
                     data_dir: local.join("data"),
                     cache_dir: local.join("cache"),
                     log_dir: local.join("logs"),
+                    runtime_dir: local.join("run"),
                 }
             }
             OsFamily::Linux => {
@@ -158,11 +175,16 @@ impl AppPaths {
                     Some(state) => state.join("devspace").join("logs"),
                     None => data_dir.join("logs"),
                 };
+                let runtime_dir = match &base.runtime {
+                    Some(runtime) => runtime.join("devspace"),
+                    None => data_dir.join("run"),
+                };
                 Self {
                     config_dir: base.config.join("devspace"),
                     data_dir,
                     cache_dir: base.cache.join("devspace"),
                     log_dir,
+                    runtime_dir,
                 }
             }
         }
@@ -174,30 +196,43 @@ impl AppPaths {
         self.config_dir.join(CONFIG_FILE_NAME)
     }
 
+    /// Path of the daemon single-instance lock file.
+    #[must_use]
+    pub fn daemon_lock_file(&self) -> PathBuf {
+        self.runtime_dir.join(DAEMON_LOCK_FILE_NAME)
+    }
+
     /// Iterates over every managed directory.
-    pub fn all(&self) -> [&Path; 4] {
+    pub fn all(&self) -> [&Path; 5] {
         [
             &self.config_dir,
             &self.data_dir,
             &self.cache_dir,
             &self.log_dir,
+            &self.runtime_dir,
         ]
     }
 
-    /// Creates every directory that does not exist yet.
+    /// Creates every directory that does not exist yet, then checks that the
+    /// runtime directory is private.
     ///
     /// On Unix, newly created directories are restricted to the current user
-    /// (`0700`). Existing directories are left untouched.
+    /// (`0700`). Existing directories are left untouched, except that the
+    /// runtime directory — which protects the IPC socket — must be owned by
+    /// the current user and inaccessible to group and others. On Windows the
+    /// directories inherit the ACL of the user profile and the IPC pipe is
+    /// protected by its own ACL.
     ///
     /// # Errors
     ///
     /// Returns [`PlatformError::CreateDirectory`] for the first directory that
-    /// could not be created.
+    /// could not be created, or [`PlatformError::InsecureDirectory`] if the
+    /// runtime directory is not private.
     pub fn ensure_exists(&self) -> Result<(), PlatformError> {
         for dir in self.all() {
             create_private_dir(dir)?;
         }
-        Ok(())
+        verify_private_dir(&self.runtime_dir)
     }
 }
 
@@ -233,6 +268,34 @@ fn create_private_dir(path: &Path) -> Result<(), PlatformError> {
         })
 }
 
+#[cfg(unix)]
+fn verify_private_dir(path: &Path) -> Result<(), PlatformError> {
+    use std::os::unix::fs::MetadataExt;
+
+    let meta = std::fs::metadata(path).map_err(|source| PlatformError::InspectDirectory {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let expected_owner = crate::privileges::effective_uid();
+    let mode = meta.mode() & 0o7777;
+    if meta.uid() != expected_owner || mode & 0o077 != 0 {
+        return Err(PlatformError::InsecureDirectory {
+            path: path.to_path_buf(),
+            owner: meta.uid(),
+            expected_owner,
+            mode,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[allow(clippy::unnecessary_wraps)]
+fn verify_private_dir(_path: &Path) -> Result<(), PlatformError> {
+    // Access control relies on the user-profile ACL and on the pipe DACL.
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +307,7 @@ mod tests {
             data_local: PathBuf::from("/local"),
             cache: PathBuf::from("/cache"),
             state: Some(PathBuf::from("/state")),
+            runtime: Some(PathBuf::from("/run/user/1000")),
             home: PathBuf::from("/home/user"),
         }
     }
@@ -255,6 +319,7 @@ mod tests {
         assert_eq!(paths.data_dir, Path::new("/data/DevSpace/data"));
         assert_eq!(paths.cache_dir, Path::new("/cache/DevSpace"));
         assert_eq!(paths.log_dir, Path::new("/home/user/Library/Logs/DevSpace"));
+        assert_eq!(paths.runtime_dir, Path::new("/data/DevSpace/run"));
     }
 
     #[test]
@@ -264,6 +329,7 @@ mod tests {
         assert_eq!(paths.data_dir, Path::new("/local/DevSpace/data"));
         assert_eq!(paths.cache_dir, Path::new("/local/DevSpace/cache"));
         assert_eq!(paths.log_dir, Path::new("/local/DevSpace/logs"));
+        assert_eq!(paths.runtime_dir, Path::new("/local/DevSpace/run"));
     }
 
     #[test]
@@ -273,16 +339,19 @@ mod tests {
         assert_eq!(paths.data_dir, Path::new("/data/devspace"));
         assert_eq!(paths.cache_dir, Path::new("/cache/devspace"));
         assert_eq!(paths.log_dir, Path::new("/state/devspace/logs"));
+        assert_eq!(paths.runtime_dir, Path::new("/run/user/1000/devspace"));
     }
 
     #[test]
     fn linux_layout_without_state_dir_falls_back_to_data() {
         let base = BaseLocations {
             state: None,
+            runtime: None,
             ..fake_base()
         };
         let paths = AppPaths::from_base(OsFamily::Linux, &base);
         assert_eq!(paths.log_dir, Path::new("/data/devspace/logs"));
+        assert_eq!(paths.runtime_dir, Path::new("/data/devspace/run"));
     }
 
     #[test]
@@ -291,6 +360,11 @@ mod tests {
         assert_eq!(paths.config_dir, Path::new("/opt/ds/config"));
         assert_eq!(paths.log_dir, Path::new("/opt/ds/logs"));
         assert_eq!(paths.config_file(), Path::new("/opt/ds/config/config.toml"));
+        assert_eq!(paths.runtime_dir, Path::new("/opt/ds/run"));
+        assert_eq!(
+            paths.daemon_lock_file(),
+            Path::new("/opt/ds/run/devspaced.lock")
+        );
     }
 
     #[test]
@@ -328,5 +402,22 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o700);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn insecure_runtime_dir_is_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_root(tmp.path());
+        paths.ensure_exists().unwrap();
+        std::fs::set_permissions(&paths.runtime_dir, std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let err = paths.ensure_exists().unwrap_err();
+        assert!(matches!(
+            err,
+            PlatformError::InsecureDirectory { mode: 0o755, .. }
+        ));
     }
 }

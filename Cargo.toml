@@ -32,13 +32,18 @@ toml = "1"
 # Errors
 thiserror = "2"
 
+# Async runtime (features are selected by each crate)
+tokio = { version = "1.47", default-features = false }
+
 # Logging
 tracing = "0.1"
+tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3", default-features = false, features = [
     "std",
     "fmt",
     "ansi",
     "env-filter",
+    "registry",
 ] }
 
 # CLI
