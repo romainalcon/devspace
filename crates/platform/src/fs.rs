@@ -90,6 +90,18 @@ pub fn create_new(path: &Path, mode: FileMode) -> io::Result<File> {
     options.open(path)
 }
 
+/// Creates a symbolic link at `link` pointing to `target` (stored as
+/// given, typically relative to the directory of `link`).
+///
+/// # Errors
+///
+/// Returns the underlying I/O error; on Windows, where creating symbolic
+/// links needs a privilege regular users usually lack, always fails with
+/// [`io::ErrorKind::Unsupported`].
+pub fn symlink(target: &Path, link: &Path) -> io::Result<()> {
+    imp::symlink(target, link)
+}
+
 /// Path of a temporary file next to `path`, unique to this process.
 ///
 /// # Errors
@@ -124,6 +136,10 @@ mod imp {
     pub(super) fn restrict(options: &mut OpenOptions, mode: FileMode) {
         options.mode(mode.bits());
     }
+
+    pub(super) fn symlink(target: &Path, link: &Path) -> io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
 }
 
 #[cfg(windows)]
@@ -140,6 +156,16 @@ mod imp {
     }
 
     pub(super) fn restrict(_options: &mut OpenOptions, _mode: FileMode) {}
+
+    pub(super) fn symlink(_target: &Path, link: &Path) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "cannot create the symbolic link `{}`: not supported on Windows",
+                link.display()
+            ),
+        ))
+    }
 }
 
 #[cfg(test)]

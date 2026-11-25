@@ -352,7 +352,7 @@ pub enum Error {
         path: PathBuf,
         /// Extraction error.
         #[source]
-        source: crate::web::archive::ArchiveError,
+        source: crate::archive::ArchiveError,
     },
 
     /// A file or directory of an installation could not be created.
@@ -372,6 +372,63 @@ pub enum Error {
         path: PathBuf,
         /// What went wrong.
         detail: String,
+    },
+
+    /// The signature of the package index does not match the DevSpace
+    /// public key; the index was not used.
+    #[error("the package index signature is invalid: {0}")]
+    IndexSignature(String),
+
+    /// The package index is not valid JSON or does not match its schema.
+    #[error("invalid package index")]
+    IndexParse(#[source] Box<serde_json::Error>),
+
+    /// The package index holds inconsistent values.
+    #[error("invalid package index: {0}")]
+    InvalidIndex(String),
+
+    /// The package index has no matching package for this platform.
+    #[error(
+        "no {name} {requirement} package is available for this platform{}",
+        if available.is_empty() { String::new() } else { format!(" (available: {available})") }
+    )]
+    RuntimeUnavailable {
+        /// Runtime.
+        name: crate::runtime::RuntimeName,
+        /// Requested version or requirement.
+        requirement: String,
+        /// Versions published for this platform, comma-separated.
+        available: String,
+    },
+
+    /// An installed runtime does not behave as expected; it was not
+    /// installed.
+    #[error("{name} {version} failed its installation check: {detail}")]
+    RuntimeCheck {
+        /// Runtime.
+        name: crate::runtime::RuntimeName,
+        /// Version being installed.
+        version: crate::runtime::Version,
+        /// What went wrong.
+        detail: String,
+    },
+
+    /// The runtime version is not installed.
+    #[error("{name} {version} is not installed")]
+    RuntimeNotInstalled {
+        /// Runtime.
+        name: crate::runtime::RuntimeName,
+        /// Version.
+        version: crate::runtime::Version,
+    },
+
+    /// A path cannot be used in a generated configuration.
+    #[error("unsupported path `{}`: {reason}", path.display())]
+    UnsupportedPath {
+        /// Path.
+        path: PathBuf,
+        /// Why.
+        reason: &'static str,
     },
 
     /// The local certificate authority could not be read.

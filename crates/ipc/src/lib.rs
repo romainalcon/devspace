@@ -27,7 +27,8 @@ pub use devspace_platform::local_socket::{ClientStream, Endpoint, Listener, Serv
 pub use error::{IpcError, Result};
 pub use protocol::{
     CertificateAuthorityInfo, ClientMessage, DaemonInfo, DaemonStatus, DnsServerState, ErrorCode,
-    ErrorResponse, IntegrationStatus, PROTOCOL_VERSION, PeerInfo, ProjectInfo, Request, Response,
+    ErrorResponse, IntegrationStatus, PROTOCOL_VERSION, PeerInfo, PhpPoolInfo, ProjectInfo,
+    Request, Response, RuntimeEnv, RuntimeEnvEntry, RuntimeInfo, RuntimeList, RuntimeVersionInfo,
     ServerMessage, SiteInfo, SiteTargetInfo, SystemIntegrations, WebServerState, WebStatus,
 };
 pub use server::ServerConnection;

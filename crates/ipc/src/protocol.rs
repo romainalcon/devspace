@@ -19,14 +19,15 @@
 //! History: version 1 (M1) had `ping`, `status` and `shutdown`; version 2
 //! (M2) adds the project registry and the `error` response; version 3 (M3)
 //! adds the web server requests and the `unavailable` and `failed` error
-//! codes.
+//! codes; version 4 (M4) adds the runtime requests, PHP sites and the PHP
+//! process managers in the web status.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 /// Version of the protocol implemented by this build.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Name and version of a program taking part in a connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,6 +138,33 @@ pub enum Request {
     /// State of the web server, DNS server, local CA and system
     /// integrations, answered by [`Response::WebStatus`].
     WebStatus,
+    /// Runtime versions published for this platform and installed,
+    /// answered by [`Response::Runtimes`].
+    RuntimeList,
+    /// Downloads, verifies and installs a runtime version, answered by
+    /// [`Response::RuntimeInstalled`]. May take minutes.
+    RuntimeInstall {
+        /// Runtime name (`php`, `node`).
+        name: String,
+        /// `MAJOR`, `MAJOR.MINOR` or `MAJOR.MINOR.PATCH`; the newest
+        /// published match is installed. Absent: the newest version.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+    },
+    /// Removes an installed runtime version, answered by
+    /// [`Response::RuntimeRemoved`].
+    RuntimeRemove {
+        /// Runtime name.
+        name: String,
+        /// Exact version.
+        version: String,
+    },
+    /// Runtime versions to use in a directory (the registered project
+    /// containing it, if any), answered by [`Response::RuntimeEnv`].
+    RuntimeEnv {
+        /// Absolute directory, as seen by the client.
+        directory: PathBuf,
+    },
 }
 
 /// Answers of the daemon.
@@ -160,6 +188,14 @@ pub enum Response {
     ProjectRemoved(ProjectInfo),
     /// Answer to the web requests: the state after the request.
     WebStatus(Box<WebStatus>),
+    /// Answer to [`Request::RuntimeList`].
+    Runtimes(RuntimeList),
+    /// Answer to [`Request::RuntimeInstall`].
+    RuntimeInstalled(RuntimeInfo),
+    /// Answer to [`Request::RuntimeRemove`].
+    RuntimeRemoved(RuntimeInfo),
+    /// Answer to [`Request::RuntimeEnv`].
+    RuntimeEnv(RuntimeEnv),
     /// The request was understood but failed.
     Error(ErrorResponse),
 }
@@ -231,6 +267,80 @@ pub struct WebStatus {
     pub system: SystemIntegrations,
     /// Site of every registered project, sorted by project name.
     pub sites: Vec<SiteInfo>,
+    /// PHP process managers serving the PHP sites, sorted by version.
+    pub php: Vec<PhpPoolInfo>,
+}
+
+/// PHP-FPM process manager of one PHP version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhpPoolInfo {
+    /// PHP version.
+    pub version: String,
+    /// Process state.
+    pub state: WebServerState,
+}
+
+/// Runtime versions known to the daemon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeList {
+    /// Serial of the package index.
+    pub index_serial: u64,
+    /// Platform key of the index, e.g. `macos-aarch64`.
+    pub platform: String,
+    /// Every published or installed version, sorted by name then version.
+    pub versions: Vec<RuntimeVersionInfo>,
+}
+
+/// One runtime version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeVersionInfo {
+    /// Runtime name.
+    pub name: String,
+    /// Exact version.
+    pub version: String,
+    /// Published in the package index for this platform.
+    pub available: bool,
+    /// Installation directory, when installed.
+    pub path: Option<PathBuf>,
+}
+
+/// An installed runtime version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeInfo {
+    /// Runtime name.
+    pub name: String,
+    /// Exact version.
+    pub version: String,
+    /// Installation directory.
+    pub path: PathBuf,
+    /// For an installation: `false` when the version was already
+    /// installed.
+    pub changed: bool,
+}
+
+/// Runtime versions to use in a directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeEnv {
+    /// Registered project containing the directory.
+    pub project: Option<String>,
+    /// Selected installed versions.
+    pub runtimes: Vec<RuntimeEnvEntry>,
+    /// Requirements of the project manifest that no installed version
+    /// satisfies, as explanations.
+    pub missing: Vec<String>,
+}
+
+/// One selected runtime version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeEnvEntry {
+    /// Runtime name.
+    pub name: String,
+    /// Exact version.
+    pub version: String,
+    /// Directories to put first in `PATH`.
+    pub bin_dirs: Vec<PathBuf>,
+    /// Environment variables to set, e.g. `PHPRC`.
+    pub variables: Vec<(String, String)>,
 }
 
 /// State of the web server process.
@@ -328,6 +438,13 @@ pub enum SiteTargetInfo {
     Static {
         /// Directory served.
         root: PathBuf,
+    },
+    /// PHP application.
+    Php {
+        /// Document root.
+        root: PathBuf,
+        /// PHP version.
+        version: String,
     },
     /// Development server.
     Proxy {
@@ -546,7 +663,19 @@ mod tests {
                         upstream: "127.0.0.1:3000".into(),
                     },
                 },
+                SiteInfo {
+                    project: "shop".into(),
+                    domain: "shop.test".into(),
+                    target: SiteTargetInfo::Php {
+                        root: PathBuf::from("/src/shop/public"),
+                        version: "8.4.23".into(),
+                    },
+                },
             ],
+            php: vec![PhpPoolInfo {
+                version: "8.4.23".into(),
+                state: WebServerState::Running { pid: 9 },
+            }],
         };
         assert_wire(
             &Response::WebStatus(Box::new(status)),
@@ -573,11 +702,88 @@ mod tests {
                      "target": {"type": "static", "root": "/src/blog/public"}},
                     {"project": "api", "domain": "api.test",
                      "target": {"type": "proxy", "upstream": "127.0.0.1:3000"}},
+                    {"project": "shop", "domain": "shop.test",
+                     "target": {"type": "php", "root": "/src/shop/public", "version": "8.4.23"}},
                 ],
+                "php": [{"version": "8.4.23", "state": {"state": "running", "pid": 9}}],
             }),
         );
         assert_wire(&ErrorCode::Unavailable, &json!("unavailable"));
         assert_wire(&ErrorCode::Failed, &json!("failed"));
+    }
+
+    #[test]
+    fn runtime_wire_format() {
+        assert_wire(&Request::RuntimeList, &json!({"method": "runtime_list"}));
+        assert_wire(
+            &Request::RuntimeInstall {
+                name: "php".into(),
+                version: Some("8.4".into()),
+            },
+            &json!({"method": "runtime_install", "name": "php", "version": "8.4"}),
+        );
+        assert_wire(
+            &Request::RuntimeInstall {
+                name: "node".into(),
+                version: None,
+            },
+            &json!({"method": "runtime_install", "name": "node"}),
+        );
+        assert_wire(
+            &Request::RuntimeRemove {
+                name: "php".into(),
+                version: "8.4.23".into(),
+            },
+            &json!({"method": "runtime_remove", "name": "php", "version": "8.4.23"}),
+        );
+        assert_wire(
+            &Request::RuntimeEnv {
+                directory: PathBuf::from("/src/shop"),
+            },
+            &json!({"method": "runtime_env", "directory": "/src/shop"}),
+        );
+        assert_wire(
+            &Response::Runtimes(RuntimeList {
+                index_serial: 1,
+                platform: "macos-aarch64".into(),
+                versions: vec![RuntimeVersionInfo {
+                    name: "node".into(),
+                    version: "24.22.3".into(),
+                    available: true,
+                    path: None,
+                }],
+            }),
+            &json!({"kind": "runtimes", "index_serial": 1, "platform": "macos-aarch64",
+                    "versions": [{"name": "node", "version": "24.22.3", "available": true,
+                                  "path": null}]}),
+        );
+        assert_wire(
+            &Response::RuntimeInstalled(RuntimeInfo {
+                name: "php".into(),
+                version: "8.4.23".into(),
+                path: PathBuf::from("/data/runtimes/php/8.4.23"),
+                changed: true,
+            }),
+            &json!({"kind": "runtime_installed", "name": "php", "version": "8.4.23",
+                    "path": "/data/runtimes/php/8.4.23", "changed": true}),
+        );
+        assert_wire(
+            &Response::RuntimeEnv(RuntimeEnv {
+                project: Some("shop".into()),
+                runtimes: vec![RuntimeEnvEntry {
+                    name: "php".into(),
+                    version: "8.4.23".into(),
+                    bin_dirs: vec![PathBuf::from("/data/runtimes/php/8.4.23/bin")],
+                    variables: vec![("PHPRC".into(), "/data/php/8.4.23".into())],
+                }],
+                missing: vec!["node 24 is not installed".into()],
+            }),
+            &json!({"kind": "runtime_env", "project": "shop",
+                    "runtimes": [{"name": "php", "version": "8.4.23",
+                                  "bin_dirs": ["/data/runtimes/php/8.4.23/bin"],
+                                  "variables": [["PHPRC", "/data/php/8.4.23"]]}],
+                    "missing": ["node 24 is not installed"]}),
+        );
     }
 
     #[test]

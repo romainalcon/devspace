@@ -26,13 +26,15 @@ that keep it maintainable. Any change to these rules must be documented here
                          └─────────────────────┘
 
    devspaced ──spawns──▶ Caddy (user, loopback only)
+   devspaced ──spawns──▶ PHP-FPM per PHP version (user, private socket)
    devspace system setup ──sudo──▶ devspace-helper (one operation, exits)
 ```
 
-Status in M3: the daemon serves the IPC protocol, owns the SQLite
-database, runs the DNS server and supervises Caddy; the CLI uses IPC for
-the daemon lifecycle, the project registry (`devspace project …`) and the
-web server (`devspace web …`), uses `devspace-core` directly for local,
+Status in M4: the daemon serves the IPC protocol, owns the SQLite
+database, runs the DNS server, supervises Caddy and the PHP-FPM masters,
+and installs runtimes; the CLI uses IPC for the daemon lifecycle, the
+project registry (`devspace project …`), the web server (`devspace web …`)
+and the runtimes (`devspace runtime …`, `devspace exec`), uses `devspace-core` directly for local,
 daemon-independent commands (configuration, paths), and starts the
 privileged helper through `sudo` for `devspace system setup|teardown`. The
 desktop application is not connected yet (M6).
@@ -42,11 +44,12 @@ desktop application is not connected yet (M6).
 | Crate | Path | Kind | Responsibility |
 |---|---|---|---|
 | `devspace-platform` | `crates/platform` | lib | **Only** place for platform-specific code: directory conventions, build target, privilege detection, local sockets / named pipes and peer identity, shutdown signals, processes (detach, executable of a pid, stop), path canonicalisation and atomic writes, system integrations (resolver, port forwarding, trust store) and elevation; later service registration. Exposes portable APIs. |
-| `devspace-core` | `crates/core` | lib | Business logic: typed configuration, errors, logging setup, single-instance lock, SQLite storage and migrations, project registry and manifest, web server (pinned Caddy release, archive extraction, sites, Caddy configuration, local CA, DNS answers); later runtimes, services. No Tauri, no UI, no transport. |
+| `devspace-core` | `crates/core` | lib | Business logic: typed configuration, errors, logging setup, single-instance lock, SQLite storage and migrations, project registry and manifest, web server (pinned Caddy release, archive extraction, sites, Caddy configuration, local CA, DNS answers), archives and downloads, runtimes (signed package index, installation, selection, PHP-FPM configuration); later services. No Tauri, no UI, no transport. |
 | `devspace-helper` | `crates/helper` | lib + bin `devspace-helper` | Privileged helper (bin) and what its callers share with it (lib): typed operations and their command-line encoding, PEM certificates and fingerprints, the local TLD. The lib has no OS code. |
 | `devspace-ipc` | `crates/ipc` | lib | Protocol between daemon and clients: messages, framing, versioning, handshake, typed client and server connections. Re-exports the transport of `devspace-platform`. |
-| `devspace-daemon` | `crates/daemon` | bin `devspaced` | Long-running process owning projects, services and processes. M3: IPC server, lifecycle, database owner, project requests, DNS server, Caddy supervision. |
+| `devspace-daemon` | `crates/daemon` | bin `devspaced` | Long-running process owning projects, services and processes. M4: IPC server, lifecycle, database owner, project requests, DNS server, supervision of Caddy and PHP-FPM, runtime requests. |
 | `devspace-cli` | `crates/cli` | bin `devspace` | Command-line client. |
+| `devspace-registry` | `tools/registry` | bin `devspace-registry` | Maintainer tool: signing key generation, signing and verification of the package index. Never shipped. |
 | `devspace-desktop` | `apps/desktop/src-tauri` | bin + lib | Tauri 2 shell with a Vue 3 / TypeScript frontend. Starter template in M0. |
 
 ### Allowed dependencies between crates
@@ -57,6 +60,7 @@ platform  ←  ipc   ←  daemon, cli, desktop
 platform  ←  daemon, cli            (signals, processes, system integrations)
 platform  ←  helper (bin)
 helper (lib)  ←  core, cli
+platform  ←  registry (tool)
 ```
 
 - `core` and `platform` must never depend on `tauri`, `ipc`, or a binary crate.
@@ -257,6 +261,53 @@ handshake messages never change shape; any other change increments
   `AAAA`), `REFUSED` elsewhere, no recursion; malformed input never panics (exhaustive
   truncation tests).
 
+### Runtimes
+
+- `devspace_core::runtime::RuntimeLayout`: installations in
+  `<data>/runtimes/<name>/<version>/`, staging in
+  `<data>/runtimes/.staging/` (same filesystem, so renames are atomic),
+  downloads in `<cache>/downloads`, PHP-FPM files in `<data>/php/<version>/`
+  (configuration, `php.ini`), `<run>/php/<version>.{sock,pid}` and
+  `<logs>/php-<version>-fpm.log`.
+- Index (`runtime::index`): `registry/index.json`, its minisign signature
+  and the public key `registry/devspace.pub` are embedded with
+  `include_bytes!`; `Index::embedded` checks the signature (prehashed
+  Ed25519 only) before parsing, then validates strictly (`deny_unknown_fields`,
+  `https://` URLs, lowercase SHA-256, sizes ≤ 512 MiB, relative paths without
+  `..`). The secret key never enters the repository; the
+  `devspace-registry` tool signs with it after asking its password.
+- Installation (`runtime::install`): per archive, download of at most the
+  declared size (`download::fetch`), SHA-256 check, `archive::extract_tree`
+  into the staging directory; then each program's version is checked, the
+  receipt `devspace-runtime.json` is written last and the directory is
+  renamed into place. A directory without a valid receipt is never an
+  installation. Removal renames to the staging area, then deletes.
+  Installations and removals are serialised by the daemon.
+- Extraction (`archive::tree`): names split on `/` only and refused when
+  absolute, `..`, or holding `\`, `:` or NUL; regular files created with
+  `create_new` (duplicates refused), executable bit only; symbolic links
+  (tar only) created after every file, with relative targets lexically
+  inside, then all resolved and required to stay inside; hard links,
+  devices and FIFOs refused; 2 GiB / 100 000 entries.
+- Selection (`runtime::select`): `[runtimes]` requirements of the manifest
+  (`MAJOR`, `MAJOR.MINOR`, exact), newest installed match; newest installed
+  version when absent. Used by the sites (PHP) and by `runtime_env`
+  (`devspace exec`).
+- PHP sites (`web::site`, `web::caddy_config`): a root with `index.php` and
+  no `index.html` becomes a PHP site; its Caddy route is the JSON
+  equivalent of `php_fastcgi` with a `unix/` upstream.
+- PHP-FPM supervision (`devspaced::php`): before every (re)start of Caddy,
+  `PhpPools::sync` runs exactly the masters of the versions used by the
+  sites (foreground, own session, socket `0600` in the private runtime
+  directory, `pm = ondemand`); a master that fails to start leaves its
+  sites answering 502 and is reported by `web status`. Child supervision
+  (monitor, graceful stop, pid file, orphan cleanup by executable check)
+  is shared with Caddy in `devspaced::process`.
+- `devspace exec` asks the daemon for the environment of the current
+  directory and runs the command itself (with the user's terminal), the
+  runtime directories first in `PATH` and `PHPRC` pointing to the
+  DevSpace `php.ini`. Nothing from the project is executed by DevSpace.
+
 ### Daemon lifecycle
 
 1. `ensure_unprivileged`, resolve and create directories, load
@@ -264,15 +315,17 @@ handshake messages never change shape; any other change increments
 2. Take the single-instance lock `<run>/devspaced.lock`
    (`devspace_core::instance::InstanceLock`, `File::try_lock`). The OS
    releases it when the process dies, so a crash never blocks a restart.
-   Then open and migrate the database, and stop a Caddy left by a crashed
-   daemon.
+   Then open and migrate the database, stop a Caddy and PHP-FPM masters
+   left by a crashed daemon, clean the runtime staging area and load the
+   package index.
 3. Build the multi-threaded Tokio runtime, bind the endpoint, install
    signal handlers, start the DNS server and (in the background, when
    installed) Caddy, accept connections (one task per connection).
 4. On `Shutdown` request or signal (`SIGINT`, `SIGTERM`, `SIGHUP`; Windows
    Ctrl+C/Break, close, logoff, shutdown): drop the listener (endpoint
    removed), notify connections, wait up to 5 s, abort the rest, stop
-   Caddy, drop the runtime (which closes the database), release the lock.
+   Caddy and the PHP-FPM masters, drop the runtime (which closes the
+   database), release the lock.
 
 `devspace daemon start` spawns `devspaced --background` from the directory of
 the `devspace` executable, detached (`setsid` on Unix, `DETACHED_PROCESS` on
@@ -334,3 +387,9 @@ each block having a `SAFETY:` comment.
 | 30 | 2026-11-25 | Configurable `web.tld` and `web.address`, defaulting to `internal` and `127.0.0.2`. | Approved by the user: coexistence with Herd/Valet, which use `*.test` and the ports of `127.0.0.1`; `pf` cannot route by host name, so a distinct address is required. `.internal` is reserved by ICANN for private use; `local` and `localhost` are refused. |
 | 31 | 2026-11-25 | Sites served over IPv4 only (no `AAAA`, no `[::1]` listener). | IPv6 loopback has a single address, which cannot be dedicated to DevSpace; clients fall back to the `A` record. |
 | 32 | 2026-11-25 | Unserved sites keep a route and a certificate and answer 503 with the reason; PHP front controllers are not served statically. | A blank page or a TLS failure in the browser does not explain anything; serving `index.php` as a file would be wrong. |
+| 33 | 2026-11-26 | Runtime authenticity from a DevSpace index signed with the maintainer's Ed25519 key (minisign format, `minisign-verify` at run time, `minisign` in the tool), plus a SHA-256 per archive. | Approved by the user: one trust anchor for every source, including static-php-cli, which signs nothing; standard, small format verifiable with the reference tool. |
+| 34 | 2026-11-26 | PHP from static-php-cli (macOS, Linux) and windows.php.net (Windows); Node.js from nodejs.org. | Approved by the user: relocatable binaries with the usual extensions, no build infrastructure needed yet. |
+| 35 | 2026-11-26 | Index embedded in the build; no remote index yet. | No hosting exists; the signature still makes every index change require the maintainer key, and the format is ready for a remote index (M7). |
+| 36 | 2026-11-26 | One PHP-FPM master per PHP version in use, on a Unix socket of the private runtime directory, restarted with the sites. | Several versions side by side without TCP ports reachable by other local users; Caddy runs as the same user. Not available on Windows (no PHP-FPM). |
+| 37 | 2026-11-26 | A runtime the manifest does not mention resolves to the newest installed version. | PHP projects registered before M4 work without editing their manifest; `[runtimes]` pins versions for reproducibility. |
+| 38 | 2026-11-26 | Child process supervision extracted to `devspaced::process`, shared by Caddy and PHP-FPM. | One implementation of monitor, graceful stop and crash recovery. |

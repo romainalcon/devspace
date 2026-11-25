@@ -169,10 +169,22 @@ pub fn format_status(status: &WebStatus) -> String {
         let url = format!("https://{}", site.domain);
         let target = match &site.target {
             SiteTargetInfo::Static { root } => format!("static  {}", root.display()),
+            SiteTargetInfo::Php { root, version } => {
+                format!("php {version}  {}", root.display())
+            }
             SiteTargetInfo::Proxy { upstream } => format!("proxy   {upstream}"),
             SiteTargetInfo::Unavailable { reason } => format!("not served: {reason}"),
         };
         let _ = writeln!(out, "  {url:<width$}  {target}");
+    }
+    for pool in &status.php {
+        let state = match &pool.state {
+            WebServerState::Stopped => "stopped".to_owned(),
+            WebServerState::Starting => "starting".to_owned(),
+            WebServerState::Running { pid } => format!("running (pid {pid})"),
+            WebServerState::Failed { message } => format!("failed: {message}"),
+        };
+        let _ = writeln!(out, "php-fpm {}: {state}", pool.version);
     }
     out
 }
@@ -232,7 +244,19 @@ pub(crate) mod tests {
                         reason: "no `public` directory".into(),
                     },
                 },
+                SiteInfo {
+                    project: "app".into(),
+                    domain: "app.internal".into(),
+                    target: SiteTargetInfo::Php {
+                        root: PathBuf::from("/src/app/public"),
+                        version: "8.4.23".into(),
+                    },
+                },
             ],
+            php: vec![devspace_ipc::PhpPoolInfo {
+                version: "8.4.23".into(),
+                state: WebServerState::Running { pid: 43 },
+            }],
         }
     }
 
@@ -262,6 +286,11 @@ pub(crate) mod tests {
             text.contains("  https://shop.internal  not served: no `public` directory"),
             "{text}"
         );
+        assert!(
+            text.contains("  https://app.internal   php 8.4.23  /src/app/public"),
+            "{text}"
+        );
+        assert!(text.contains("php-fpm 8.4.23: running (pid 43)"), "{text}");
     }
 
     #[test]

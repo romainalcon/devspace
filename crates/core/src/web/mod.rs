@@ -6,7 +6,6 @@
 //!
 //! - [`release`]: the pinned Caddy release, downloaded and verified
 //!   against embedded SHA-256 checksums;
-//! - [`archive`]: extraction of the Caddy executable from its archive;
 //! - [`site`]: what each project serves (static files or a development
 //!   server), from its manifest;
 //! - [`caddy_config`]: the Caddy JSON configuration of the sites;
@@ -17,7 +16,6 @@
 //! Everything listens on loopback addresses only, on unprivileged ports
 //! ([`crate::config::WebConfig`]).
 
-pub mod archive;
 pub mod ca;
 pub mod caddy_config;
 pub mod dns;

@@ -5,7 +5,7 @@
 //! a client sends [`Request::Shutdown`] or the process receives a shutdown
 //! signal. Shutdown then proceeds in order: stop accepting and remove the
 //! endpoint, notify open connections, wait up to [`DRAIN_TIMEOUT`] for them
-//! to finish, abort the rest, stop the web server.
+//! to finish, abort the rest, stop the web server and the PHP-FPM masters.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,6 +24,7 @@ use tracing::Instrument as _;
 use crate::dns;
 use crate::error::DaemonError;
 use crate::handlers::{self, DaemonState};
+use crate::runtimes::Runtimes;
 use crate::web::WebServer;
 
 /// Maximum time given to open connections once shutdown has started.
@@ -34,7 +35,12 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 
 /// Serves IPC requests until shutdown.
-pub(crate) async fn run(paths: &AppPaths, db: Database, web: WebServer) -> Result<(), DaemonError> {
+pub(crate) async fn run(
+    paths: &AppPaths,
+    db: Database,
+    web: WebServer,
+    runtimes: Runtimes,
+) -> Result<(), DaemonError> {
     let endpoint = Endpoint::new(&paths.runtime_dir)?;
     let mut listener = Listener::bind(&endpoint)?;
     let mut signals = match ShutdownSignals::install() {
@@ -48,7 +54,7 @@ pub(crate) async fn run(paths: &AppPaths, db: Database, web: WebServer) -> Resul
         }
     };
 
-    let state = Arc::new(DaemonState::new(db, web));
+    let state = Arc::new(DaemonState::new(db, web, runtimes));
     let dns_port = state.web.config().dns_port;
     let dns_task = match dns::bind(dns_port).await {
         Ok(socket) => {
@@ -127,6 +133,7 @@ pub(crate) async fn run(paths: &AppPaths, db: Database, web: WebServer) -> Resul
         connections.abort_all();
     }
     state.web.stop().await;
+    state.runtimes.php.stop_all().await;
     if let Some(task) = dns_task {
         task.abort();
     }

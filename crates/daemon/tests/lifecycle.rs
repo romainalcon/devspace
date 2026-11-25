@@ -353,3 +353,100 @@ async fn dns_and_web_status_are_served() {
     );
     stop_daemon(child, client).await;
 }
+
+#[tokio::test]
+async fn runtimes_are_listed_and_selected_per_project() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let shop = workspace.path().join("shop");
+    std::fs::create_dir_all(shop.join("src")).unwrap();
+    std::fs::write(
+        shop.join("devspace.toml"),
+        "[runtimes]\nphp = \"8.4\"\nnode = \"24\"\n",
+    )
+    .unwrap();
+    let shop = devspace_platform::fs::canonicalize(&shop).unwrap();
+
+    let (child, mut client) = start_daemon(home.path()).await;
+    let _guard = KillOnPanic(child.id());
+
+    // The embedded index is verified and lists versions for this platform.
+    let Response::Runtimes(list) = client.request(Request::RuntimeList).await.unwrap() else {
+        panic!("expected the runtime list");
+    };
+    assert!(list.index_serial >= 1);
+    for name in ["node", "php"] {
+        assert!(
+            list.versions.iter().any(|v| v.name == name && v.available),
+            "{name}: {list:?}"
+        );
+    }
+    assert!(list.versions.iter().all(|v| v.path.is_none()));
+
+    // Nothing is installed: the project requirements are reported.
+    client
+        .request(Request::ProjectAdd {
+            path: shop.clone(),
+            name: None,
+        })
+        .await
+        .unwrap();
+    let Response::RuntimeEnv(env) = client
+        .request(Request::RuntimeEnv {
+            directory: shop.join("src"),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("expected a runtime environment");
+    };
+    assert_eq!(env.project.as_deref(), Some("shop"));
+    assert!(env.runtimes.is_empty());
+    assert_eq!(env.missing.len(), 2, "{:?}", env.missing);
+    assert!(env.missing.iter().any(|m| m.contains("php 8.4")));
+
+    // Invalid requests are refused without touching the network.
+    for request in [
+        Request::RuntimeInstall {
+            name: "python".into(),
+            version: None,
+        },
+        Request::RuntimeInstall {
+            name: "php".into(),
+            version: Some("latest".into()),
+        },
+        Request::RuntimeEnv {
+            directory: "relative".into(),
+        },
+    ] {
+        assert_eq!(
+            error_code(client.request(request).await.unwrap()),
+            ErrorCode::InvalidRequest
+        );
+    }
+    assert_eq!(
+        error_code(
+            client
+                .request(Request::RuntimeInstall {
+                    name: "php".into(),
+                    version: Some("5.6".into()),
+                })
+                .await
+                .unwrap()
+        ),
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        error_code(
+            client
+                .request(Request::RuntimeRemove {
+                    name: "php".into(),
+                    version: "8.4.23".into(),
+                })
+                .await
+                .unwrap()
+        ),
+        ErrorCode::NotFound
+    );
+    stop_daemon(child, client).await;
+}

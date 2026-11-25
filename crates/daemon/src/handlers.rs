@@ -1,12 +1,14 @@
 //! Request handlers of the daemon.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
 use devspace_core::db::Database;
 use devspace_core::error::report;
 use devspace_core::project::{Project, ProjectName};
-use devspace_core::web::site::{self, Site, SiteTarget};
+use devspace_core::runtime::InstalledRuntime;
+use devspace_core::web::site::{self, Runtimes as SiteRuntimes, Site, SiteTarget};
 use devspace_core::web::{ca, release};
 use devspace_ipc::{
     CertificateAuthorityInfo, DaemonInfo, DaemonStatus, DnsServerState, ErrorCode, ErrorResponse,
@@ -17,6 +19,7 @@ use devspace_platform::PlatformError;
 use devspace_platform::system::port_forwarding::Forwarding;
 use devspace_platform::system::{IntegrationState, port_forwarding, resolver, trust_store};
 
+use crate::runtimes::{self, Runtimes};
 use crate::web::{WebError, WebServer};
 
 /// State shared by all connections.
@@ -27,16 +30,18 @@ pub(crate) struct DaemonState {
     /// The connection is synchronous; it is only used from blocking tasks.
     db: Mutex<Database>,
     pub(crate) web: WebServer,
+    pub(crate) runtimes: Runtimes,
     dns: Mutex<DnsServerState>,
 }
 
 impl DaemonState {
-    pub(crate) fn new(db: Database, web: WebServer) -> Self {
+    pub(crate) fn new(db: Database, web: WebServer, runtimes: Runtimes) -> Self {
         Self {
             started: Instant::now(),
             pid: std::process::id(),
             db: Mutex::new(db),
             web,
+            runtimes,
             dns: Mutex::new(DnsServerState::Failed {
                 message: "not started".to_owned(),
             }),
@@ -71,6 +76,13 @@ impl DaemonState {
             internal_error("the daemon database is unavailable; restart the daemon")
         })
     }
+
+    /// Registered projects (blocking).
+    pub(crate) fn projects(&self) -> Result<Vec<Project>, Response> {
+        self.db()?
+            .list_projects()
+            .map_err(|err| error_response(&err))
+    }
 }
 
 /// Computes the response to `request`. [`Request::Shutdown`] is only
@@ -93,30 +105,50 @@ pub(crate) async fn handle(request: Request, state: &Arc<DaemonState>) -> Respon
             Ok(_) => web_status(state).await,
             Err(err) => web_error(&err),
         },
-        Request::WebStart => match sites(state).await {
-            Ok(sites) => match state.web.start(&sites).await {
+        Request::WebStart | Request::WebRestart => {
+            match apply_sites(state, matches!(request, Request::WebRestart)).await {
                 Ok(()) => web_status(state).await,
-                Err(err) => web_error(&err),
-            },
-            Err(response) => response,
-        },
-        Request::WebRestart => match sites(state).await {
-            Ok(sites) => match state.web.restart(&sites).await {
-                Ok(()) => web_status(state).await,
-                Err(err) => web_error(&err),
-            },
-            Err(response) => response,
-        },
+                Err(response) => response,
+            }
+        }
         Request::WebStop => {
             state.web.stop().await;
+            state.runtimes.php.stop_all().await;
             web_status(state).await
         }
         Request::WebStatus => web_status(state).await,
+        Request::RuntimeList => runtimes::list(state).await,
+        Request::RuntimeInstall { name, version } => {
+            runtimes::install(state, &name, version.as_deref()).await
+        }
+        Request::RuntimeRemove { name, version } => runtimes::remove(state, &name, &version).await,
+        Request::RuntimeEnv { directory } => runtimes::env(state, directory).await,
     }
 }
 
+/// Starts (or, with `restart`, restarts) the web server with the current
+/// sites, after starting the PHP-FPM masters they need and stopping the
+/// others.
+async fn apply_sites(state: &Arc<DaemonState>, restart: bool) -> Result<(), Response> {
+    let (sites, installed) = sites(state).await?;
+    let php: BTreeSet<_> = sites
+        .iter()
+        .filter_map(|site| match site.target {
+            SiteTarget::Php { version, .. } => Some(version),
+            _ => None,
+        })
+        .collect();
+    state.runtimes.php.sync(&php, &installed).await;
+    let result = if restart {
+        state.web.restart(&sites).await
+    } else {
+        state.web.start(&sites).await
+    };
+    result.map_err(|err| web_error(&err))
+}
+
 /// Runs `work` on a blocking thread.
-async fn blocking<F>(state: &Arc<DaemonState>, work: F) -> Response
+pub(crate) async fn blocking<F>(state: &Arc<DaemonState>, work: F) -> Response
 where
     F: FnOnce(&DaemonState) -> Response + Send + 'static,
 {
@@ -153,20 +185,24 @@ fn handle_project_request(request: Request, state: &DaemonState) -> Response {
     result.unwrap_or_else(|err| error_response(&err))
 }
 
-/// Sites of the registered projects, read from their manifests.
-fn resolve_sites(state: &DaemonState) -> Result<Vec<Site>, Response> {
-    let projects = state
-        .db()?
-        .list_projects()
-        .map_err(|err| error_response(&err))?;
+/// Sites of the registered projects, read from their manifests, and the
+/// installed runtimes they were resolved with.
+fn resolve_sites(state: &DaemonState) -> Result<(Vec<Site>, Vec<InstalledRuntime>), Response> {
+    let projects = state.projects()?;
+    let installed = state.runtimes.installed();
+    let runtimes = SiteRuntimes {
+        installed: &installed,
+        layout: &state.runtimes.layout,
+    };
     let tld = &state.web.config().tld;
-    Ok(projects
+    let sites = projects
         .iter()
-        .map(|project| site::resolve(project, tld))
-        .collect())
+        .map(|project| site::resolve(project, tld, runtimes))
+        .collect();
+    Ok((sites, installed))
 }
 
-async fn sites(state: &Arc<DaemonState>) -> Result<Vec<Site>, Response> {
+async fn sites(state: &Arc<DaemonState>) -> Result<(Vec<Site>, Vec<InstalledRuntime>), Response> {
     let state = Arc::clone(state);
     tokio::task::spawn_blocking(move || resolve_sites(&state))
         .await
@@ -185,26 +221,20 @@ pub(crate) async fn autostart_web(state: &Arc<DaemonState>) {
         tracing::info!("web server not installed; run `devspace web install`");
         return;
     }
-    if let Ok(sites) = sites(state).await {
-        // Errors are logged and kept in the state by `start`.
-        let _ = state.web.start(&sites).await;
-    }
+    // Errors are logged and kept in the state by `start`.
+    let _ = apply_sites(state, false).await;
 }
 
-/// Applies a change of the registry to the running web server.
-fn reload_in_background(state: &Arc<DaemonState>) {
+/// Applies a change of the registry or of the installed runtimes to the
+/// running web server.
+pub(crate) fn reload_in_background(state: &Arc<DaemonState>) {
     if !state.web.is_running() {
         return;
     }
     let state = Arc::clone(state);
     tokio::spawn(async move {
-        match sites(&state).await {
-            Ok(sites) => {
-                if let Err(err) = state.web.restart(&sites).await {
-                    tracing::error!(error = %report(&err), "failed to reload the web server");
-                }
-            }
-            Err(_) => tracing::error!("failed to list the sites to reload the web server"),
+        if let Err(response) = apply_sites(&state, true).await {
+            tracing::error!(?response, "failed to reload the web server");
         }
     });
 }
@@ -230,7 +260,7 @@ fn collect_web_status(
 ) -> Result<Response, Response> {
     let web = &state.web;
     let config = web.config();
-    let sites = resolve_sites(state)?.into_iter().map(site_info).collect();
+    let sites = resolve_sites(state)?.0.into_iter().map(site_info).collect();
     let local_ca = ca::load(web.layout()).unwrap_or_else(|err| {
         tracing::warn!(error = %report(&err), "cannot read the local certificate authority");
         None
@@ -279,6 +309,7 @@ fn collect_web_status(
             forwarding_active,
         },
         sites,
+        php: state.runtimes.php.status(),
     })))
 }
 
@@ -302,6 +333,10 @@ fn site_info(site: Site) -> SiteInfo {
         domain: site.domain,
         target: match site.target {
             SiteTarget::Static { root } => SiteTargetInfo::Static { root },
+            SiteTarget::Php { root, version, .. } => SiteTargetInfo::Php {
+                root,
+                version: version.to_string(),
+            },
             SiteTarget::Proxy { upstream } => SiteTargetInfo::Proxy {
                 upstream: upstream.as_str().to_owned(),
             },
@@ -329,7 +364,7 @@ fn web_error(err: &WebError) -> Response {
     Response::Error(ErrorResponse { code, message })
 }
 
-fn error_response(err: &devspace_core::Error) -> Response {
+pub(crate) fn error_response(err: &devspace_core::Error) -> Response {
     use devspace_core::Error as E;
 
     let code = match err {
@@ -345,7 +380,15 @@ fn error_response(err: &devspace_core::Error) -> Response {
         | E::InvalidManifest { .. }
         | E::UnsupportedManifestVersion { .. } => ErrorCode::InvalidRequest,
         E::ProjectNameTaken { .. } | E::ProjectPathTaken { .. } => ErrorCode::AlreadyExists,
-        E::ProjectNotFound { .. } => ErrorCode::NotFound,
+        E::ProjectNotFound { .. }
+        | E::RuntimeUnavailable { .. }
+        | E::RuntimeNotInstalled { .. } => ErrorCode::NotFound,
+        E::Download { .. }
+        | E::DownloadRead { .. }
+        | E::ChecksumMismatch { .. }
+        | E::Archive { .. }
+        | E::InstallFile { .. }
+        | E::RuntimeCheck { .. } => ErrorCode::Failed,
         _ => ErrorCode::Internal,
     };
     let message = report(err);

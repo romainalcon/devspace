@@ -144,6 +144,16 @@ pub enum CliError {
     #[error("failed to read the confirmation")]
     Prompt(#[source] io::Error),
 
+    /// The command given to `devspace exec` could not be started.
+    #[error("failed to run `{}`", program.display())]
+    Exec {
+        /// Program.
+        program: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
     /// A process holds the instance lock but does not accept connections.
     #[error(
         "a daemon process holds `{}` but does not accept connections; it may still be \

@@ -1,15 +1,16 @@
 //! `devspace` command-line interface.
 //!
 //! Local commands (`paths`, `config`) work without the daemon; `daemon`
-//! commands manage the daemon lifecycle, `project` and `web` commands use
-//! the registry and web server owned by the daemon, through the IPC
-//! protocol. `system` commands install the machine-wide integrations
+//! commands manage the daemon lifecycle, `project`, `web`, `runtime` and
+//! `exec` commands use the registry, web server and runtimes owned by the
+//! daemon, through the IPC protocol. `system` commands install the machine-wide integrations
 //! through the privileged helper, after approval.
 
 mod client;
 mod daemon;
 mod error;
 mod project;
+mod runtime;
 mod system;
 mod web;
 
@@ -23,6 +24,7 @@ use devspace_core::{AppPaths, error::report};
 use crate::daemon::DaemonCommand;
 use crate::error::CliError;
 use crate::project::ProjectCommand;
+use crate::runtime::RuntimeCommand;
 use crate::system::SystemCommand;
 use crate::web::WebCommand;
 
@@ -54,6 +56,17 @@ enum Command {
     /// daemon).
     #[command(subcommand)]
     Web(WebCommand),
+    /// Install, list or remove runtime versions (PHP, Node.js; requires the
+    /// daemon).
+    #[command(subcommand)]
+    Runtime(RuntimeCommand),
+    /// Run a command with the runtime versions of the current project
+    /// first in PATH, e.g. `devspace exec -- php artisan migrate`.
+    Exec {
+        /// Command and its arguments.
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<std::ffi::OsString>,
+    },
     /// Install or remove the machine-wide integrations (DNS resolver, port
     /// forwarding, certificate trust) with administrator rights.
     #[command(subcommand)]
@@ -114,6 +127,8 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
         Command::Project(command) => return project::execute(command, &paths),
         Command::Web(command) => return web::execute(command, &paths),
         Command::System(command) => return system::execute(command, &paths),
+        Command::Runtime(command) => return runtime::execute(command, &paths),
+        Command::Exec { command } => return runtime::exec(&command, &paths),
     }
     Ok(ExitCode::SUCCESS)
 }

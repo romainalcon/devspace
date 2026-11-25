@@ -6,15 +6,16 @@
 //! The checksums were computed from the published archives and
 //! cross-checked with the SHA-512 values of the release's
 //! `caddy_<version>_checksums.txt` when the version was pinned; updating
-//! the version means updating every checksum. (A general package index with
-//! signature verification comes with the runtime package manager, M4.)
+//! the version means updating every checksum. (Runtimes come from the
+//! signed package index of [`crate::runtime::index`]; Caddy stays pinned
+//! here, as approved for M3.)
 //!
 //! Installation is atomic: the executable appears at
 //! [`WebLayout::caddy_binary`] only once it has been verified, extracted
 //! and checked to report the expected version.
 
-use std::fs::{self, File};
-use std::io::{self, Read as _};
+use std::fs;
+use std::io;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -22,10 +23,10 @@ use std::time::Duration;
 use devspace_platform::fs::{FileMode, create_new, set_mode, temporary_sibling};
 use devspace_platform::paths::OsFamily;
 use devspace_platform::target::{Arch, Target, executable_name};
-use sha2::{Digest as _, Sha256};
 
 use super::WebLayout;
-use super::archive::{ArchiveKind, extract_file};
+use crate::archive::{ArchiveKind, extract_file};
+use crate::download::{self, verify_sha256};
 use crate::{Error, Result};
 
 /// Pinned Caddy version.
@@ -36,9 +37,6 @@ pub const MAX_DOWNLOAD_LEN: u64 = 100 * 1024 * 1024;
 
 /// Largest executable accepted (the executables are about 50 MB).
 pub const MAX_BINARY_LEN: u64 = 200 * 1024 * 1024;
-
-/// Time limit of the whole download.
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// Time limit of `caddy version`.
 const VERSION_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
@@ -160,7 +158,7 @@ pub fn install(layout: &WebLayout) -> Result<bool> {
         .join(format!("{}.part", asset.file_name()));
     let url = asset.url();
     tracing::info!(%url, "downloading Caddy");
-    let result = download(&url, &archive)
+    let result = download::fetch(&url, &archive, MAX_DOWNLOAD_LEN)
         .and_then(|()| install_archive(&archive, asset, &layout.caddy_binary));
     let _ = fs::remove_file(&archive);
     result?;
@@ -176,40 +174,10 @@ pub fn install(layout: &WebLayout) -> Result<bool> {
     Ok(true)
 }
 
-fn download(url: &str, dest: &Path) -> Result<()> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .https_only(true)
-        .timeout_global(Some(DOWNLOAD_TIMEOUT))
-        .build()
-        .into();
-    let mut response = agent.get(url).call().map_err(|source| Error::Download {
-        url: url.to_owned(),
-        source: Box::new(source),
-    })?;
-    let mut reader = response
-        .body_mut()
-        .with_config()
-        .limit(MAX_DOWNLOAD_LEN)
-        .reader();
-    let mut file = File::create(dest).map_err(install_error(dest))?;
-    io::copy(&mut reader, &mut file).map_err(|source| Error::DownloadRead {
-        url: url.to_owned(),
-        source,
-    })?;
-    file.sync_all().map_err(install_error(dest))
-}
-
 /// Verifies `archive` against `asset` and extracts the executable to
 /// `dest` atomically.
 fn install_archive(archive: &Path, asset: &Asset, dest: &Path) -> Result<()> {
-    let actual = sha256_file(archive)?;
-    if actual != asset.sha256 {
-        return Err(Error::ChecksumMismatch {
-            file: asset.file_name(),
-            expected: asset.sha256.to_owned(),
-            actual,
-        });
-    }
+    verify_sha256(archive, &asset.file_name(), asset.sha256)?;
     if let Some(parent) = dest.parent() {
         create_dir(parent)?;
     }
@@ -238,24 +206,6 @@ fn install_archive(archive: &Path, asset: &Asset, dest: &Path) -> Result<()> {
         let _ = fs::remove_file(&temp);
     }
     result
-}
-
-fn sha256_file(path: &Path) -> Result<String> {
-    let mut file = File::open(path).map_err(install_error(path))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer).map_err(install_error(path))?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
 }
 
 /// Runs `caddy version` and checks that it reports [`CADDY_VERSION`].
@@ -316,7 +266,8 @@ fn install_error(path: &Path) -> impl FnOnce(io::Error) -> Error + '_ {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::web::archive::tests::tar_gz;
+    use crate::archive::tests::tar_gz;
+    use crate::download::sha256_file;
 
     #[test]
     fn every_supported_platform_has_an_asset() {

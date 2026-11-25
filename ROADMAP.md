@@ -74,7 +74,7 @@ Legend: ✅ done · 🔄 in progress · ⏳ planned
 - ✅ Validated; M3 started on 2026-11-25.
 - ⏳ Execution on Windows and Linux (CI, once a remote exists).
 
-## M3 — Web server, domains & privileged helper 🔄 (awaiting validation)
+## M3 — Web server, domains & privileged helper ✅
 
 Design choices approved on 2026-11-25: pinned Caddy download, embedded DNS
 server plus resolver file, one-shot helper through `sudo`, static files or
@@ -129,6 +129,8 @@ coexist with Laravel Herd (`*.test` on `127.0.0.1`).
   `ssl` (reported "missing"); readiness check stalled up to ~70 s once pf
   was active (now a bind check; restarts take ~0.1 s); PHP projects served
   as empty static sites (now 503 with an explanation); empty error pages.
+- ✅ Validated by the user on 2026-11-26 (M4 started), with the two
+  points below still open.
 - ⏳ `devspace system teardown` with sudo; persistence across a reboot.
 - ⏳ Linux and Windows system integrations (resolver, port forwarding,
   trust store, elevation) report "not supported" for now. The web server,
@@ -136,10 +138,65 @@ coexist with Laravel Herd (`*.test` on `127.0.0.1`).
   (CI, once a remote exists); `platform` and `helper` are cross-checked
   with clippy for Windows and Linux.
 
-## M4 — Runtime package manager ⏳
+## M4 — Runtime package manager 🔄 (awaiting validation)
 
-- Package index, downloads, checksum and signature verification, safe
-  extraction, multiple versions side by side, per-project selection.
+Design choices approved on 2026-11-26: PHP and Node.js; PHP binaries from
+static-php-cli (macOS, Linux) and windows.php.net (Windows), Node.js from
+nodejs.org; authenticity through a DevSpace index signed with the
+maintainer's Ed25519 key (minisign format), checksums per archive.
+
+- ✅ Package index `registry/index.json` (schema v1): every runtime version
+  per platform with archive URLs (HTTPS only), sizes and SHA-256; strict
+  parsing, paths confined to the installation. Embedded in DevSpace with
+  its signature, verified against the embedded public key before parsing.
+  Index #1: Node.js 22.23.5, 24.22.3, 26.13.1; PHP 8.4.23 and 8.5.8
+  (macOS, Linux), 8.4.28 and 8.5.13 (Windows).
+- ✅ `devspace-registry` maintainer tool: key generation (password-encrypted
+  secret key), signing, verification; compatible with `minisign`.
+- ✅ Safe extraction of whole archives (`archive::extract_tree`): no
+  absolute or `..` names, no drive or stream separators, links created
+  last and resolved inside the destination, no hard links or devices,
+  executable bit only (no setuid), size and entry limits.
+- ✅ Installation in a staging directory: download of at most the declared
+  size, SHA-256 check, extraction, version check of every program
+  (`node --version`, `php -v`, `php-fpm -v`), receipt, atomic rename;
+  nothing left on failure. Several versions side by side in
+  `<data>/runtimes/<name>/<version>/`; removal; leftovers cleaned at
+  daemon start.
+- ✅ Per-project selection: `[runtimes] php = "8.4"`, `node = "24"` in
+  `devspace.toml` (`MAJOR`, `MAJOR.MINOR` or exact), newest installed match;
+  newest installed version when the manifest does not say.
+- ✅ PHP sites: a root with `index.php` and no `index.html` is served by
+  Caddy (`php_fastcgi` equivalent) through one PHP-FPM master per version
+  in use, supervised by the daemon (private Unix socket `0600`, generated
+  `php-fpm.conf` and development `php.ini`, crash recovery by pid file),
+  started and stopped with the sites; installing or removing a version
+  reloads them.
+- ✅ `devspace runtime list|install|remove`, `devspace exec -- <command>`
+  (project versions first in `PATH`, `PHPRC` for the CLI `php.ini`).
+- ✅ IPC protocol version 4: `runtime_list|install|remove|env`, PHP sites
+  and PHP-FPM states in `web_status`.
+- ✅ Unit tests (versions, index and signatures incl. tampering, hostile
+  archives, installation with a local package incl. checksum and version
+  failures, PHP-FPM configuration, Caddy PHP route, PHP site selection)
+  and an end-to-end test (index listing, project environment, refusals).
+- ✅ Manual run on macOS ARM64 in an isolated `DEVSPACE_HOME`: real
+  installation of PHP 8.4.23, 8.5.8 and Node.js 24.22.3 (npm links),
+  `devspace exec` (php, node, npm, exit codes), two PHP projects on two
+  versions at once over HTTPS, hot reload after an installation, removal
+  of a version in use, recovery after `kill -9` of the daemon, clean stop.
+- ✅ Index #1 signed with the maintainer key (`registry/devspace.pub`, key id
+  `772CAD8DC23A3EEE`) on 2026-11-26.
+- ⏳ PHP sites on Windows (no PHP-FPM; `php-cgi` would be needed): reported
+  as not served; installation and `devspace exec` are portable but have
+  not been run on Windows or Linux (CI, once a remote exists).
+- ⚠️ static-php-cli publishes no checksums or signatures: its archives were
+  hashed when pinned (trust on first download, then fixed by the signed
+  index), and lag a few patch releases behind php.net. Node.js checksums
+  come from `SHASUMS256.txt` (its GPG signature was not checked: no gpg on
+  the pinning machine); Windows PHP checksums from `releases.json`.
+- ⚠️ No automatic index update: a new index ships with a new DevSpace
+  build until a hosting exists (M7).
 
 ## M5 — Services ⏳
 

@@ -8,9 +8,14 @@
 //! [project]
 //! name = "my-app"   # lowercase letters, digits and hyphens; 1–63 characters
 //!
-//! [web]             # what https://<name>.test serves; at most one of:
-//! root = "public"   # static files of this directory of the project
+//! [web]             # what https://<name>.internal serves; at most one of:
+//! root = "public"   # files of this directory of the project (PHP when it
+//!                   # has an index.php and no index.html)
 //! # proxy = "127.0.0.1:3000"  # or a development server on the loopback
+//!
+//! [runtimes]        # versions used by the project: MAJOR, MAJOR.MINOR
+//! php = "8.4"       # or MAJOR.MINOR.PATCH; the newest installed match
+//! node = "24"       # is used (the newest installed version if absent)
 //! ```
 //!
 //! Every key is optional and unknown keys are rejected. DevSpace only reads
@@ -25,6 +30,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::Deserialize;
 
 use super::ProjectName;
+use crate::runtime::{RuntimeName, VersionReq};
 use crate::{Error, Result};
 
 /// File name of the manifest at the root of a project.
@@ -46,6 +52,8 @@ pub struct Manifest {
     pub project: ManifestProject,
     /// `[web]` table.
     pub web: ManifestWeb,
+    /// `[runtimes]` table.
+    pub runtimes: ManifestRuntimes,
 }
 
 impl Default for Manifest {
@@ -54,6 +62,28 @@ impl Default for Manifest {
             schema_version: MANIFEST_SCHEMA_VERSION,
             project: ManifestProject::default(),
             web: ManifestWeb::default(),
+            runtimes: ManifestRuntimes::default(),
+        }
+    }
+}
+
+/// `[runtimes]` table of the manifest: the versions the project needs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ManifestRuntimes {
+    /// Node.js versions accepted.
+    pub node: Option<VersionReq>,
+    /// PHP versions accepted.
+    pub php: Option<VersionReq>,
+}
+
+impl ManifestRuntimes {
+    /// Requirement for `name`, if the manifest sets one.
+    #[must_use]
+    pub const fn get(&self, name: RuntimeName) -> Option<VersionReq> {
+        match name {
+            RuntimeName::Node => self.node,
+            RuntimeName::Php => self.php,
         }
     }
 }
@@ -317,6 +347,33 @@ mod tests {
             Manifest::from_toml(both, origin()),
             Err(Error::InvalidManifest { .. })
         ));
+    }
+
+    #[test]
+    fn runtime_requirements_are_validated() {
+        let manifest =
+            Manifest::from_toml("[runtimes]\nphp = \"8.4\"\nnode = \"24\"\n", origin()).unwrap();
+        assert_eq!(
+            manifest.runtimes.get(RuntimeName::Php),
+            Some(VersionReq::parse("8.4").unwrap())
+        );
+        assert_eq!(
+            manifest.runtimes.get(RuntimeName::Node),
+            Some(VersionReq::parse("24").unwrap())
+        );
+        for bad in [
+            "[runtimes]\nphp = \"latest\"\n",
+            "[runtimes]\nphp = 8.4\n",
+            "[runtimes]\npython = \"3\"\n",
+        ] {
+            assert!(
+                matches!(
+                    Manifest::from_toml(bad, origin()),
+                    Err(Error::ManifestParse { .. })
+                ),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

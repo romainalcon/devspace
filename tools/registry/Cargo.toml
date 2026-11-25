@@ -1,0 +1,19 @@
+[package]
+name = "devspace-registry"
+description = "Maintainer tool of the DevSpace package index: signing key generation, signing and verification."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "devspace-registry"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+devspace-platform.workspace = true
+minisign.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,428 @@
+{
+  "schema_version": 1,
+  "serial": 1,
+  "runtimes": {
+    "node": {
+      "22.23.5": {
+        "macos-aarch64": {
+          "archives": [
+            {
+              "url": "https://nodejs.org/dist/v22.23.5/node-v22.23.5-darwin-arm64.tar.gz",
+              "sha256": "e7131995759b61a0170b646010d2ad35a5d37b4cb0d471f3e8317eac6f742f3d",
+              "size": 50004868,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "macos-x86_64": {
+          "archives": [
+            {
+              "url": "https://nodejs.org/dist/v22.23.5/node-v22.23.5-darwin-x64.tar.gz",
+              "sha256": "c53383238206b9ae4db23c5d8a63645e2e753bec8ab51a49cc81939aa64e9422",
+              "size": 51197448,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-x86_64": {
+          "archives": [
+            {
+              "url": "https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-x64.tar.gz",
+              "sha256": "c54118104acc524633b5abe106bbf44a53126ec8b4e5fa105cb92b5d7de8a1a1",
+              "size": 56856114,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-aarch64": {
+          "archives": [
+            {
+              "url": "https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-arm64.tar.gz",
+              "sha256": "8bd3dc69eee8f3f226315a80d7d1d4faccf217a4c8fae500168ac2e38f3bdba3",
+              "size": 56713682,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "windows-x86_64": {
+          "archives": [
+            {
+              "url": "https://nodejs.org/dist/v22.23.5/node-v22.23.5-win-x64.zip",
+              "sha256": "4a191082e9706866830379d577d2cc8a50c776fcd9436a8d061b063ed0d9a0e3",
+              "size": 35630346,
+              "format": "zip",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "."
+          ]
+        }
+      },
+      "24.22.3": {
+        "macos-aarch64": {
+          "archives": [
+            {
+              "url": "https://nodejs.org/dist/v24.22.3/node-v24.22.3-darwin-arm64.tar.gz",
+              "sha256": "ff6e17d4874b76d272212b908cc020d6e815fba5a6c7eaaa06add725840307fd",
+              "size": 53084299,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "macos-x86_64": {
+          "archives": [
+            {
+              "url": "https://nodejs.org/dist/v24.22.3/node-v24.22.3-darwin-x64.tar.gz",
+              "sha256": "977614af0504c81045e7fd85596dbca0e5f951b96681516dadafedcca8c447f7",
+              "size": 54395976,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-x86_64": {
+          "archives": [
+            {
+              "url": "https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.gz",
+              "sha256": "061ec3e3062115705b56b51fa9cc330ab50d34b6969387d4e4b1a50c6809acc2",
+              "size": 58330843,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-aarch64": {
+          "archives": [
+            {
+              "url": "https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-arm64.tar.gz",
+              "sha256": "261af2af250dfd7e9f25cf151d1b2713a0adf8f10a9ad116c4947f68627affe8",
+              "size": 58051304,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "windows-x86_64": {
+          "archives": [
+            {
+              "url": "https://nodejs.org/dist/v24.22.3/node-v24.22.3-win-x64.zip",
+              "sha256": "e612af99f626ab415ea225af6bce5c971feb448cb5cae250bb1c3fa50c5f7d9f",
+              "size": 37762649,
+              "format": "zip",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "."
+          ]
+        }
+      },
+      "26.13.1": {
+        "macos-aarch64": {
+          "archives": [
+            {
+              "url": "https://nodejs.org/dist/v26.13.1/node-v26.13.1-darwin-arm64.tar.gz",
+              "sha256": "aec2514ea1ceb2ba52455e9ec65986f6749a06dd759e5db2a72e6889668c9735",
+              "size": 58340590,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "macos-x86_64": {
+          "archives": [
+            {
+              "url": "https://nodejs.org/dist/v26.13.1/node-v26.13.1-darwin-x64.tar.gz",
+              "sha256": "82bb96078a24ca50b9c9a38f2379e6be6d87171fcd400fc14c8934b3bce96e2f",
+              "size": 59799324,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-x86_64": {
+          "archives": [
+            {
+              "url": "https://nodejs.org/dist/v26.13.1/node-v26.13.1-linux-x64.tar.gz",
+              "sha256": "518674de2b621728a5e4486f5fb3b7d2900bb3cc4aa97969edaa463db99f9778",
+              "size": 62904977,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-aarch64": {
+          "archives": [
+            {
+              "url": "https://nodejs.org/dist/v26.13.1/node-v26.13.1-linux-arm64.tar.gz",
+              "sha256": "80a330b35415382878df18d41afbd106ea89bfb3be0087d6608e289a14c5cc7d",
+              "size": 62600078,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "windows-x86_64": {
+          "archives": [
+            {
+              "url": "https://nodejs.org/dist/v26.13.1/node-v26.13.1-win-x64.zip",
+              "sha256": "e2edda75bfb089654705cf65a13b58933bfd5f57148e8ebda916f58a2474f1f7",
+              "size": 41166246,
+              "format": "zip",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "."
+          ]
+        }
+      }
+    },
+    "php": {
+      "8.4.23": {
+        "macos-aarch64": {
+          "archives": [
+            {
+              "url": "https://dl.static-php.dev/static-php-cli/common/php-8.4.23-cli-macos-aarch64.tar.gz",
+              "sha256": "bba286e442796dbd420d778a016e2817b31d5036d11b3ba316d19a60de912cdc",
+              "size": 14435029,
+              "format": "tar.gz",
+              "destination": "bin"
+            },
+            {
+              "url": "https://dl.static-php.dev/static-php-cli/common/php-8.4.23-fpm-macos-aarch64.tar.gz",
+              "sha256": "038ea93f7ec17d125ddb09c68d099e72d68c5ee4c235048fe5fe2f720de6484f",
+              "size": 14457789,
+              "format": "tar.gz",
+              "destination": "bin"
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "macos-x86_64": {
+          "archives": [
+            {
+              "url": "https://dl.static-php.dev/static-php-cli/common/php-8.4.23-cli-macos-x86_64.tar.gz",
+              "sha256": "bd1c20f355e73a9f807b24ba62fd98f3a57bc08d063ebb3aa6393909e01ce89e",
+              "size": 14862400,
+              "format": "tar.gz",
+              "destination": "bin"
+            },
+            {
+              "url": "https://dl.static-php.dev/static-php-cli/common/php-8.4.23-fpm-macos-x86_64.tar.gz",
+              "sha256": "6d0a0ffd4dae2672037b599dbca3c2288db3f96efb2f29e0102bbdb1be177c5f",
+              "size": 14889885,
+              "format": "tar.gz",
+              "destination": "bin"
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-x86_64": {
+          "archives": [
+            {
+              "url": "https://dl.static-php.dev/static-php-cli/common/php-8.4.23-cli-linux-x86_64.tar.gz",
+              "sha256": "1aeed5bc7967977ca5b1da7163acd91bf9ba3ac56037045d4e91ee2ff2712bb7",
+              "size": 12375301,
+              "format": "tar.gz",
+              "destination": "bin"
+            },
+            {
+              "url": "https://dl.static-php.dev/static-php-cli/common/php-8.4.23-fpm-linux-x86_64.tar.gz",
+              "sha256": "baa5ddcf2f9aabff78848cb6851bb104a4c0873347b8ee65eb9bcf4760a4d31a",
+              "size": 12398139,
+              "format": "tar.gz",
+              "destination": "bin"
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-aarch64": {
+          "archives": [
+            {
+              "url": "https://dl.static-php.dev/static-php-cli/common/php-8.4.23-cli-linux-aarch64.tar.gz",
+              "sha256": "0978d89157292bcc9268a34a73a4d5d2793f8dff1403b5138a94d2af6b7a09b0",
+              "size": 12768307,
+              "format": "tar.gz",
+              "destination": "bin"
+            },
+            {
+              "url": "https://dl.static-php.dev/static-php-cli/common/php-8.4.23-fpm-linux-aarch64.tar.gz",
+              "sha256": "dcd8795cf91f8f88e6b383efab8569dffa469891cf2d90225dcca9711f8115c4",
+              "size": 12790780,
+              "format": "tar.gz",
+              "destination": "bin"
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        }
+      },
+      "8.5.8": {
+        "macos-aarch64": {
+          "archives": [
+            {
+              "url": "https://dl.static-php.dev/static-php-cli/common/php-8.5.8-cli-macos-aarch64.tar.gz",
+              "sha256": "cba9bd8b38b51ef2c7cebf02af689e4481bbd07f65edc0b63d3a43b04e0c9db7",
+              "size": 15106458,
+              "format": "tar.gz",
+              "destination": "bin"
+            },
+            {
+              "url": "https://dl.static-php.dev/static-php-cli/common/php-8.5.8-fpm-macos-aarch64.tar.gz",
+              "sha256": "612489ba5cc217d7f76fa585b0a5f01fe68176dbe5b2c2e015f1e02a2424ddaa",
+              "size": 15129320,
+              "format": "tar.gz",
+              "destination": "bin"
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "macos-x86_64": {
+          "archives": [
+            {
+              "url": "https://dl.static-php.dev/static-php-cli/common/php-8.5.8-cli-macos-x86_64.tar.gz",
+              "sha256": "05751000c6643f82e8377ed19d55bc159f84bbed46ace1fcc6f62be9866c787c",
+              "size": 15606882,
+              "format": "tar.gz",
+              "destination": "bin"
+            },
+            {
+              "url": "https://dl.static-php.dev/static-php-cli/common/php-8.5.8-fpm-macos-x86_64.tar.gz",
+              "sha256": "3f6ab89907c90af9b832b9207a897c08a58841655be1db22dac3f27209c9cc52",
+              "size": 15629720,
+              "format": "tar.gz",
+              "destination": "bin"
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-x86_64": {
+          "archives": [
+            {
+              "url": "https://dl.static-php.dev/static-php-cli/common/php-8.5.8-cli-linux-x86_64.tar.gz",
+              "sha256": "517a18e0f0874de35669fe134eb3c52508e128a6d1da5bf890760cb800ada410",
+              "size": 12931817,
+              "format": "tar.gz",
+              "destination": "bin"
+            },
+            {
+              "url": "https://dl.static-php.dev/static-php-cli/common/php-8.5.8-fpm-linux-x86_64.tar.gz",
+              "sha256": "836412ac76432e9f8e49a88c440c381acb2d262cc6dab4ba0a80468ab568a239",
+              "size": 12954233,
+              "format": "tar.gz",
+              "destination": "bin"
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-aarch64": {
+          "archives": [
+            {
+              "url": "https://dl.static-php.dev/static-php-cli/common/php-8.5.8-cli-linux-aarch64.tar.gz",
+              "sha256": "af995ef6b3187b39932a00714dfb97e44bfa40a9243c4c29f61f19d583950753",
+              "size": 13570407,
+              "format": "tar.gz",
+              "destination": "bin"
+            },
+            {
+              "url": "https://dl.static-php.dev/static-php-cli/common/php-8.5.8-fpm-linux-aarch64.tar.gz",
+              "sha256": "10380823b81f46fb26fdadc8e93b968a2b7d26852b0694e3f1b7bf6ee0a14e8d",
+              "size": 13594235,
+              "format": "tar.gz",
+              "destination": "bin"
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        }
+      },
+      "8.4.28": {
+        "windows-x86_64": {
+          "archives": [
+            {
+              "url": "https://downloads.php.net/~windows/releases/php-8.4.28-nts-Win32-vs17-x64.zip",
+              "sha256": "c1f9280588b7b6ad7b518969022f0b0175f106fab9d0639ad0e4ce7cd47ac1ed",
+              "size": 35384096,
+              "format": "zip"
+            }
+          ],
+          "bin": [
+            "."
+          ]
+        }
+      },
+      "8.5.13": {
+        "windows-x86_64": {
+          "archives": [
+            {
+              "url": "https://downloads.php.net/~windows/releases/php-8.5.13-nts-Win32-vs17-x64.zip",
+              "sha256": "4ae6c72bc0ca4f6b8f3e9b107874bae0135699f3aabe6c26a1f6103d040eea97",
+              "size": 36399949,
+              "format": "zip"
+            }
+          ],
+          "bin": [
+            "."
+          ]
+        }
+      }
+    }
+  }
+}

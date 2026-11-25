@@ -1,13 +1,21 @@
-//! Extraction of a single file from a downloaded archive.
+//! Extraction of downloaded archives.
 //!
-//! Only the requested entry is extracted, and its content is written to a
-//! destination chosen by the caller: names, paths, links and permissions
-//! stored in the archive are never used to create files, so a malicious
-//! archive cannot write outside the destination (no path traversal).
+//! Two modes, both safe against hostile archives (no path traversal):
+//!
+//! - [`extract_file`] copies one entry into a destination chosen by the
+//!   caller: names, paths, links and permissions stored in the archive are
+//!   never used to create files;
+//! - [`extract_tree`] (module [`tree`]) recreates a whole archive inside a
+//!   fresh directory, refusing any entry or link that could reach outside
+//!   of it.
 
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Component, Path};
+
+pub mod tree;
+
+pub use tree::{TreeLimits, extract_tree};
 
 /// Format of an archive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +52,36 @@ pub enum ArchiveError {
     /// The destination could not be written.
     #[error("failed to write the extracted file")]
     Write(#[source] io::Error),
+    /// An entry name could designate a location outside the destination
+    /// (absolute, `..`, drive or stream separators, …).
+    #[error("unsafe entry name `{0}`")]
+    UnsafePath(String),
+    /// A symbolic link points outside the destination, or nowhere.
+    #[error("symbolic link `{link}` → `{target}` points outside the archive")]
+    UnsafeLink {
+        /// Link entry.
+        link: String,
+        /// Its target.
+        target: String,
+    },
+    /// An entry type that is never extracted (hard link, device, …).
+    #[error("entry `{0}` has an unsupported type")]
+    UnsupportedEntry(String),
+    /// Two entries have the same path.
+    #[error("entry `{0}` appears twice")]
+    Duplicate(String),
+    /// The archive holds more data or entries than allowed.
+    #[error("the archive exceeds the limit of {0}")]
+    LimitExceeded(String),
+    /// A file, directory or link could not be created.
+    #[error("failed to create `{}`", path.display())]
+    Create {
+        /// Path being created.
+        path: std::path::PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
 }
 
 /// Copies the regular file `entry` (a plain file name at the root of the
@@ -162,7 +200,8 @@ pub(crate) mod tests {
 
     use super::*;
 
-    /// Builds a `.tar.gz` file holding `entries` (path, data, is_symlink).
+    /// Builds a `.tar.gz` file holding `entries` (path, data, is_symlink);
+    /// symbolic links point to `/etc/passwd`.
     pub(crate) fn tar_gz(path: &Path, entries: &[(&str, &[u8], bool)]) {
         let file = File::create(path).unwrap();
         let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
@@ -188,7 +227,7 @@ pub(crate) mod tests {
         builder.into_inner().unwrap().finish().unwrap();
     }
 
-    fn zip_file(path: &Path, entries: &[(&str, &[u8])]) {
+    pub(crate) fn zip_file(path: &Path, entries: &[(&str, &[u8])]) {
         let mut writer = zip::ZipWriter::new(File::create(path).unwrap());
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored);

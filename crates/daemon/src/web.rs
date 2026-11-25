@@ -3,20 +3,15 @@
 //! The daemon starts Caddy as a child process running as the current user,
 //! in its own session, with a configuration generated from the registered
 //! projects. Changes are applied by restarting it (its admin API is
-//! disabled). A monitor task owns the child: it records an unexpected exit
-//! as a failure, and performs graceful stops (`SIGTERM`, then a kill after
-//! [`STOP_TIMEOUT`]).
-//!
-//! The pid of the running Caddy is kept in a file of the runtime directory,
-//! so that a daemon restarted after a crash can stop the Caddy left behind
-//! (only if that pid still runs the DevSpace Caddy executable).
+//! disabled). The child is supervised by [`crate::process`] (monitor task,
+//! graceful stop, pid file for crash recovery).
 
 use std::fs::{self, File};
 use std::io;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use devspace_core::config::WebConfig;
@@ -28,17 +23,11 @@ use devspace_ipc::WebServerState;
 use devspace_platform::fs::{FileMode, write_atomic};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::process::Child;
-use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
+
+use crate::process::{self, ChildInfo, POLL_INTERVAL, SharedState, Supervised};
 
 /// Time given to Caddy to start accepting connections.
 const START_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// Time given to Caddy to stop gracefully before it is killed.
-const STOP_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Interval between readiness checks.
-const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Time limit of the port forwarding probe.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -118,22 +107,15 @@ impl WebError {
     }
 }
 
-/// The running Caddy.
-#[derive(Debug)]
-struct Running {
-    stop: oneshot::Sender<()>,
-    monitor: JoinHandle<()>,
-}
-
 /// Supervisor of the web server.
 #[derive(Debug)]
 pub(crate) struct WebServer {
     layout: WebLayout,
     config: WebConfig,
     /// Serialises start, stop and install.
-    control: tokio::sync::Mutex<Option<Running>>,
+    control: tokio::sync::Mutex<Option<Supervised>>,
     /// Current state, also updated by the monitor task.
-    state: Arc<Mutex<WebServerState>>,
+    state: SharedState,
 }
 
 impl WebServer {
@@ -155,14 +137,11 @@ impl WebServer {
     }
 
     pub(crate) fn state(&self) -> WebServerState {
-        self.state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        process::get_state(&self.state)
     }
 
     fn set_state(&self, state: WebServerState) {
-        set_state(&self.state, state);
+        process::set_state(&self.state, state);
     }
 
     pub(crate) fn is_running(&self) -> bool {
@@ -191,7 +170,7 @@ impl WebServer {
         let mut control = self.control.lock().await;
         if control
             .as_ref()
-            .is_some_and(|running| !running.monitor.is_finished())
+            .is_some_and(|running| !running.is_finished())
         {
             return Ok(());
         }
@@ -217,21 +196,19 @@ impl WebServer {
     /// Stops Caddy if it runs, waiting for it to exit.
     pub(crate) async fn stop(&self) {
         let mut control = self.control.lock().await;
-        stop_running(control.take()).await;
+        if let Some(running) = control.take() {
+            running.stop().await;
+        }
         self.set_state(WebServerState::Stopped);
     }
 
     /// Restarts Caddy with a configuration serving `sites`.
     pub(crate) async fn restart(&self, sites: &[Site]) -> Result<(), WebError> {
-        {
-            let mut control = self.control.lock().await;
-            stop_running(control.take()).await;
-            self.set_state(WebServerState::Stopped);
-        }
+        self.stop().await;
         self.start(sites).await
     }
 
-    async fn spawn(&self, sites: &[Site]) -> Result<Running, WebError> {
+    async fn spawn(&self, sites: &[Site]) -> Result<Supervised, WebError> {
         let layout = &self.layout;
         if !release::is_installed(layout) {
             return Err(WebError::NotInstalled);
@@ -308,18 +285,16 @@ impl WebServer {
             https_port = self.config.https_port,
             "web server started"
         );
-        self.set_state(WebServerState::Running { pid });
-
-        let (stop, stop_rx) = oneshot::channel();
-        let monitor = tokio::spawn(monitor(
+        Ok(Supervised::start(
             child,
-            pid,
-            stop_rx,
+            ChildInfo {
+                name: "web server".to_owned(),
+                pid,
+                pid_file: layout.caddy_pid_file.clone(),
+                log: layout.caddy_log.clone(),
+            },
             Arc::clone(&self.state),
-            layout.caddy_pid_file.clone(),
-            layout.caddy_log.clone(),
-        ));
-        Ok(Running { stop, monitor })
+        ))
     }
 
     /// Whether Caddy listens on the HTTPS port, checked by trying to bind
@@ -340,7 +315,7 @@ impl WebServer {
                 return Err(WebError::Exited {
                     status,
                     log: self.layout.caddy_log.clone(),
-                    tail: log_tail(&self.layout.caddy_log),
+                    tail: process::log_tail(&self.layout.caddy_log, LOG_TAIL_LINES),
                 });
             }
             if self.is_listening() {
@@ -384,87 +359,13 @@ impl WebServer {
     }
 }
 
-fn set_state(state: &Mutex<WebServerState>, value: WebServerState) {
-    *state.lock().unwrap_or_else(PoisonError::into_inner) = value;
-}
-
-async fn stop_running(running: Option<Running>) {
-    let Some(running) = running else {
-        return;
-    };
-    // Fails if the monitor already ended (Caddy exited by itself).
-    let _ = running.stop.send(());
-    if let Err(err) = running.monitor.await {
-        tracing::error!(error = %err, "web server monitor task failed");
-    }
-}
-
-/// Owns the Caddy child until it exits.
-async fn monitor(
-    mut child: Child,
-    pid: u32,
-    stop: oneshot::Receiver<()>,
-    state: Arc<Mutex<WebServerState>>,
-    pid_file: PathBuf,
-    log: PathBuf,
-) {
-    tokio::select! {
-        status = child.wait() => {
-            let message = match status {
-                Ok(status) => format!(
-                    "the web server exited unexpectedly ({status}); see `{}`",
-                    log.display()
-                ),
-                Err(err) => format!("lost track of the web server: {err}"),
-            };
-            tracing::error!(pid, error = %message, "web server stopped");
-            set_state(&state, WebServerState::Failed { message });
-        }
-        _ = stop => {
-            if let Err(err) = devspace_platform::process::request_stop(pid) {
-                tracing::warn!(pid, error = %err, "failed to ask the web server to stop");
-            }
-            if tokio::time::timeout(STOP_TIMEOUT, child.wait()).await.is_err() {
-                tracing::warn!(pid, timeout_secs = STOP_TIMEOUT.as_secs(), "web server did not stop in time; killing it");
-                let _ = child.kill().await;
-            }
-            tracing::info!(pid, "web server stopped");
-        }
-    }
-    let _ = fs::remove_file(&pid_file);
-}
-
-/// Stops a Caddy left running by a previous daemon (crash or kill), if the
-/// pid file designates a process that still runs the DevSpace Caddy.
+/// Stops a Caddy left running by a previous daemon (crash or kill).
 pub(crate) fn stop_orphan(layout: &WebLayout) {
-    let pid_file = &layout.caddy_pid_file;
-    let Ok(text) = fs::read_to_string(pid_file) else {
-        return;
-    };
-    if let Ok(pid) = text.trim().parse::<u32>()
-        && runs_executable(pid, &layout.caddy_binary)
-    {
-        tracing::warn!(pid, "stopping the web server left by a previous daemon");
-        if let Err(err) = devspace_platform::process::request_stop(pid) {
-            tracing::warn!(pid, error = %err, "failed to stop the previous web server");
-        }
-        let deadline = Instant::now() + STOP_TIMEOUT;
-        while runs_executable(pid, &layout.caddy_binary) && Instant::now() < deadline {
-            std::thread::sleep(POLL_INTERVAL);
-        }
-        if runs_executable(pid, &layout.caddy_binary) {
-            let _ = devspace_platform::process::kill(pid);
-        }
-    }
-    let _ = fs::remove_file(pid_file);
-}
-
-fn runs_executable(pid: u32, executable: &Path) -> bool {
-    let canonical = |path: &Path| devspace_platform::fs::canonicalize(path).ok();
-    match devspace_platform::process::executable_path(pid) {
-        Ok(path) => canonical(&path).is_some() && canonical(&path) == canonical(executable),
-        Err(_) => false,
-    }
+    process::stop_orphan(
+        &layout.caddy_pid_file,
+        Some(&layout.caddy_binary),
+        "web server",
+    );
 }
 
 fn prepare_error(path: &Path) -> impl FnOnce(io::Error) -> WebError + '_ {
@@ -474,47 +375,9 @@ fn prepare_error(path: &Path) -> impl FnOnce(io::Error) -> WebError + '_ {
     }
 }
 
-/// Last lines of the Caddy log, for startup errors.
-fn log_tail(path: &Path) -> String {
-    match fs::read_to_string(path) {
-        Ok(text) => {
-            let lines: Vec<&str> = text.lines().collect();
-            lines[lines.len().saturating_sub(LOG_TAIL_LINES)..].join("\n")
-        }
-        Err(err) => format!("(could not read the log: {err})"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn log_tail_keeps_the_last_lines() {
-        let tmp = tempfile::tempdir().unwrap();
-        let log = tmp.path().join("caddy.log");
-        let text: String = (0..40).map(|i| format!("line {i}\n")).collect();
-        fs::write(&log, text).unwrap();
-        let tail = log_tail(&log);
-        assert_eq!(tail.lines().count(), LOG_TAIL_LINES);
-        assert!(tail.ends_with("line 39"));
-        assert!(log_tail(&tmp.path().join("absent")).starts_with("(could not read"));
-    }
-
-    #[test]
-    fn orphan_cleanup_ignores_unrelated_processes() {
-        let tmp = tempfile::tempdir().unwrap();
-        let layout = WebLayout::new(&devspace_core::AppPaths::from_root(tmp.path()));
-        fs::create_dir_all(layout.caddy_pid_file.parent().unwrap()).unwrap();
-        // The test process itself is not the DevSpace Caddy.
-        fs::write(&layout.caddy_pid_file, std::process::id().to_string()).unwrap();
-        stop_orphan(&layout);
-        assert!(!layout.caddy_pid_file.exists());
-
-        fs::write(&layout.caddy_pid_file, "garbage").unwrap();
-        stop_orphan(&layout);
-        assert!(!layout.caddy_pid_file.exists());
-    }
 
     #[tokio::test]
     async fn start_requires_installation() {

@@ -3,8 +3,9 @@
 //! Startup sequence: refuse elevated execution, resolve and create the
 //! application directories, load the configuration, initialise logging
 //! (rolling files in the log directory, plus stderr in the foreground), take
-//! the single-instance lock, open and migrate the database, stop a web
-//! server left by a crashed daemon, then serve IPC requests (and run the DNS
+//! the single-instance lock, open and migrate the database, stop the web
+//! server and PHP-FPM masters left by a crashed daemon, load the package
+//! index, then serve IPC requests (and run the DNS
 //! and web servers) until a shutdown request or signal.
 //!
 //! The daemon normally runs in the background, started by
@@ -14,6 +15,9 @@
 mod dns;
 mod error;
 mod handlers;
+mod php;
+mod process;
+mod runtimes;
 mod server;
 mod web;
 
@@ -24,6 +28,7 @@ use devspace_core::config::GlobalConfig;
 use devspace_core::db::Database;
 use devspace_core::instance::InstanceLock;
 use devspace_core::logging::{self, LogFile, LogTargets};
+use devspace_core::runtime::RuntimeLayout;
 use devspace_core::web::WebLayout;
 use devspace_core::{AppPaths, error::report};
 
@@ -93,13 +98,14 @@ fn run(args: &Args) -> Result<(), DaemonError> {
     let layout = WebLayout::new(&paths);
     web::stop_orphan(&layout);
     let web = web::WebServer::new(layout, config.web);
+    let runtimes = runtimes::Runtimes::new(RuntimeLayout::new(&paths));
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("devspaced-worker")
         .build()
         .map_err(DaemonError::Runtime)?;
-    let result = runtime.block_on(server::run(&paths, db, web));
+    let result = runtime.block_on(server::run(&paths, db, web, runtimes));
     // Cancel any remaining task, and close the database, before releasing
     // the lock.
     drop(runtime);

@@ -30,8 +30,8 @@ binaries and **without requiring Docker**.
 
 ## Functional requirements
 
-Requirements are tagged with the milestone delivering them. M0, M1 and M2
-items are implemented today; M3 items are implemented and awaiting
+Requirements are tagged with the milestone delivering them. M0 to M3
+items are implemented today; M4 items are implemented and awaiting
 validation.
 
 ### Implemented (M0)
@@ -73,13 +73,13 @@ validation.
 | F-2.6 | Registering or removing a project never creates, modifies or deletes files in the project directory. |
 | F-2.7 | `project` commands require the daemon; when it is not running they fail with a hint to run `devspace daemon start`. |
 
-### Implemented (M3, awaiting validation)
+### Implemented (M3)
 
 | ID | Requirement |
 |---|---|
 | F-3.1 | `devspace web install` downloads Caddy v2.11.9 for the current platform over HTTPS, verifies its SHA-256 against the checksum embedded in DevSpace, extracts only the executable and installs it in `<data>/tools/caddy/2.11.9/`. A mismatching download is discarded. |
 | F-3.2 | The daemon runs Caddy as the current user, listening only on `web.address` (IPv4 loopback, `127.0.0.2` by default) on `web.http_port` and `web.https_port`. It starts with the daemon when installed, restarts when a project is added or removed, and stops with the daemon. `devspace web start|stop|restart` control it; `restart` re-reads the project manifests. |
-| F-3.3 | Every registered project is served at `https://<name>.<tld>` and `https://*.<name>.<tld>` (`web.tld`, `internal` by default): static files of `[web] root` (default `public/`, which must exist), or the loopback development server of `[web] proxy`. Roots resolving outside the project are refused, and so are roots holding an `index.php` without `index.html` (PHP runtimes come with M4). Unserved projects are reported with the reason by `web status` and answer HTTP 503 with that reason; error responses carry a short text instead of an empty page. HTTP requests are redirected to HTTPS on the standard port. |
+| F-3.3 | Every registered project is served at `https://<name>.<tld>` and `https://*.<name>.<tld>` (`web.tld`, `internal` by default): static files of `[web] root` (default `public/`, which must exist), or the loopback development server of `[web] proxy`. Roots resolving outside the project are refused; roots holding an `index.php` without `index.html` are PHP sites (F-4.7). Unserved projects are reported with the reason by `web status` and answer HTTP 503 with that reason; error responses carry a short text instead of an empty page. HTTP requests are redirected to HTTPS on the standard port. |
 | F-3.4 | Certificates are issued by a local certificate authority created in `<data>/caddy/storage`; Caddy never installs its trust itself. |
 | F-3.5 | The daemon answers DNS queries for `*.<tld>` on `127.0.0.1:web.dns_port` (UDP) with `web.address` (no IPv6 answer), and refuses other names. |
 | F-3.6 | `devspace web status` prints the web server, DNS server, CA fingerprint, system integrations (and whether port 80 really reaches the web server) and every site. |
@@ -87,12 +87,26 @@ validation.
 | F-3.8 | System files that exist without the DevSpace marker are never modified or removed; `system setup` then stops before any change and explains the conflict. |
 | F-3.9 | Web and system commands require the daemon (F-2.7). Starting the web server before installing it fails with a hint to run `devspace web install`. |
 
+### Implemented (M4, awaiting validation)
+
+| ID | Requirement |
+|---|---|
+| F-4.1 | The package index embedded in DevSpace is used only if its signature matches the embedded DevSpace public key; it lists, per runtime version and platform, HTTPS archive URLs with their size and SHA-256. |
+| F-4.2 | `devspace runtime list` prints the index serial, the platform, and every published or installed version of PHP and Node.js with its state. |
+| F-4.3 | `devspace runtime install NAME [VERSION]` installs the newest published version matching `VERSION` (`MAJOR`, `MAJOR.MINOR` or exact; newest overall if absent) in `<data>/runtimes/NAME/VERSION/`. Each archive is downloaded over HTTPS (at most its declared size), verified against its SHA-256, extracted without leaving the installation directory, and the programs must report the expected version; otherwise nothing is installed. Installing an installed version does nothing. |
+| F-4.4 | `devspace runtime remove NAME VERSION` removes an installed version; its PHP-FPM is stopped first and the sites are reloaded. |
+| F-4.5 | Several versions of a runtime can be installed side by side; installing or removing one never modifies another. |
+| F-4.6 | `[runtimes] php` and `node` in `devspace.toml` select the newest installed version matching the requirement; without a requirement, the newest installed version is used. |
+| F-4.7 | A site whose root has an `index.php` and no `index.html` is served by PHP-FPM of the selected PHP version (one master per version in use, running as the user on a private socket), with requests for missing files going to `index.php`. If no installed version matches, the site answers 503 with the command to run. `web status` lists the PHP version of each PHP site and the state of each PHP-FPM. Not available on Windows (reported as not served). |
+| F-4.8 | `devspace exec -- COMMAND [ARGS…]` runs a command with the runtime versions of the registered project containing the current directory (newest installed versions elsewhere) first in `PATH`, the DevSpace `php.ini` for PHP, and returns its exit code; unmet requirements are reported as warnings. |
+| F-4.9 | Runtime commands require the daemon (F-2.7). |
+
 ### Planned
 
 | ID | Milestone | Requirement |
 |---|---|---|
 | F-3.10 | M3+ | System integrations on Linux and Windows. |
-| F-4 | M4 | Runtime package manager: download, verify checksums and signatures, extract safely (no path traversal), switch versions. |
+| F-4.10 | M4+ | PHP sites on Windows; remote index updates (M7). |
 | F-5 | M5 | Services (MySQL/MariaDB, PostgreSQL, Redis, …) supervised by the daemon. |
 | F-6 | M6 | Desktop application on top of the IPC API. |
 
@@ -132,19 +146,24 @@ schema_version = 1        # required to equal 1 if present
 name = "my-app"           # optional; see project names below
 
 [web]                     # optional; at most one of root and proxy
-root = "public"           # static files; relative, no `..`; default "public"
+root = "public"           # files; relative, no `..`; default "public"
 proxy = "127.0.0.1:3000"  # or a development server: 127.0.0.1, [::1] or localhost
+
+[runtimes]                # optional; MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH
+php = "8.4"               # newest installed match; newest installed if absent
+node = "24"
 ```
 
 Rules: all keys optional, unknown keys rejected, file only read by DevSpace
 (never written, nothing in it is executed). `project.name` is read when
-the project is added; `[web]` whenever the web server (re)starts.
+the project is added; `[web]` and `[runtimes]` whenever the web server
+(re)starts, and `[runtimes]` at every `devspace exec`.
 
 Project names: 1–63 characters among lowercase ASCII letters, digits and
 `-`, not starting or ending with `-` (a DNS label, for the `*.<tld>`
 domains of M3).
 
-## IPC protocol reference (version 3)
+## IPC protocol reference (version 4)
 
 Frames: 4-byte big-endian payload length, then a UTF-8 JSON object; payloads
 over 1 MiB are rejected. Every message carries a `type` tag.
@@ -166,6 +185,10 @@ over 1 MiB are rejected. Every message carries a `type` tag.
 | `project_list` | `projects` with `projects: [{name, path, added_at}]` sorted by name |
 | `project_remove` with `name` | `project_removed` with `name`, `path`, `added_at` |
 | `web_install`, `web_start`, `web_stop`, `web_restart`, `web_status` | `web_status` (below) |
+| `runtime_list` | `runtimes` with `index_serial`, `platform`, `versions: [{name, version, available, path}]` (`path` `null` when not installed) |
+| `runtime_install` with `name`, optional `version` (requirement) | `runtime_installed` with `name`, `version`, `path`, `changed` (`false`: already installed) |
+| `runtime_remove` with `name`, `version` (exact) | `runtime_removed` with the same fields |
+| `runtime_env` with `directory` (absolute) | `runtime_env` with `project` (or `null`), `runtimes: [{name, version, bin_dirs, variables: [[name, value]]}]`, `missing: [message]` |
 
 `web_status` fields: `caddy_version`, `caddy_installed`, `tld`,
 `address`, `server`
@@ -176,17 +199,18 @@ over 1 MiB are rejected. Every message carries a `type` tag.
 `certificate_trust`: `installed|missing|outdated|conflict|unsupported|unknown`;
 `forwarding_active`: boolean or `null`), `sites` (`[{project, domain,
 target}]` with `target` `{type: static, root}`, `{type: proxy, upstream}` or
-`{type: unavailable, reason}`).
+`{type: unavailable, reason}`, or `{type: php, root, version}`), `php`
+(`[{version, state}]`, `state` shaped like `server`).
 
 Any request may instead be answered with `error`: `code` (`invalid_request`,
 `already_exists`, `not_found`, `unavailable`, `failed`, `internal`) and a
 human-readable `message`; the connection stays open. `added_at` is in
-seconds since the Unix epoch. `web_install` may take minutes; clients use a
-longer timeout for it.
+seconds since the Unix epoch. `web_install` and `runtime_install` may take
+minutes; clients use a longer timeout for them.
 
 Version history: 1 (M1) `ping`, `status`, `shutdown`; 2 (M2) project
 requests and `error` responses; 3 (M3) web requests, `unavailable` and
-`failed` codes.
+`failed` codes; 4 (M4) runtime requests, PHP sites and PHP-FPM states.
 
 ## Privileged helper reference
 
@@ -232,8 +256,11 @@ No platform-specific command or path may be assumed outside
   certificates (M3).
 - IPC clients are authenticated with OS-level permissions and peer identity
   (M1); the daemon is also authenticated by its clients.
-- Downloaded packages are verified (checksum and signature) before use;
-  archives are extracted without path traversal.
+- Downloaded packages are verified (signed index, then SHA-256 of each
+  archive) before use; archives are extracted without path traversal or
+  links leaving the installation (M4).
+- PHP-FPM listens on a Unix socket readable by the user only, never on a
+  TCP port (M4).
 - Services listen on loopback only by default.
 - Secrets and credentials are never logged.
 - Untrusted project commands are never executed without explicit approval.

@@ -41,6 +41,7 @@ pub fn render(sites: &[Site], web: &WebConfig, storage_dir: &Path) -> Value {
     for site in sites {
         let handler = match &site.target {
             SiteTarget::Static { root } => json!({"handler": "file_server", "root": root}),
+            SiteTarget::Php { root, socket, .. } => php_handler(root, socket),
             SiteTarget::Proxy { upstream } => json!({
                 "handler": "reverse_proxy",
                 "upstreams": [{"dial": upstream.as_str()}],
@@ -130,6 +131,53 @@ pub fn render(sites: &[Site], web: &WebConfig, storage_dir: &Path) -> Value {
     })
 }
 
+/// Equivalent of the `php_fastcgi` directive of the Caddyfile (output of
+/// `caddy adapt` for Caddy 2.11): directories get a trailing slash, paths
+/// that are not files go to `index.php`, `.php` scripts are executed by
+/// PHP-FPM through its Unix socket, everything else is a static file.
+fn php_handler(root: &Path, socket: &Path) -> Value {
+    json!({
+        "handler": "subroute",
+        "routes": [
+            {"handle": [{"handler": "vars", "root": root}]},
+            {
+                "match": [{
+                    "file": {"try_files": ["{http.request.uri.path}/index.php"]},
+                    "not": [{"path": ["*/"]}],
+                }],
+                "handle": [{
+                    "handler": "static_response",
+                    "status_code": 308,
+                    "headers": {"Location": [
+                        "./{http.request.orig_uri.path.file_escaped}/{http.request.orig_uri.prefixed_query}",
+                    ]},
+                }],
+            },
+            {
+                "match": [{"file": {
+                    "try_files": [
+                        "{http.request.uri.path}",
+                        "{http.request.uri.path}/index.php",
+                        "index.php",
+                    ],
+                    "try_policy": "first_exist_fallback",
+                    "split_path": [".php"],
+                }}],
+                "handle": [{"handler": "rewrite", "uri": "{http.matchers.file.relative}"}],
+            },
+            {
+                "match": [{"path": ["*.php"]}],
+                "handle": [{
+                    "handler": "reverse_proxy",
+                    "transport": {"protocol": "fastcgi", "split_path": [".php"]},
+                    "upstreams": [{"dial": format!("unix/{}", socket.display())}],
+                }],
+            },
+            {"handle": [{"handler": "file_server"}]},
+        ],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -160,6 +208,14 @@ mod tests {
                     "api",
                     SiteTarget::Proxy {
                         upstream: ProxyUpstream::parse("127.0.0.1:3000").unwrap(),
+                    },
+                ),
+                site(
+                    "shop",
+                    SiteTarget::Php {
+                        root: PathBuf::from("/src/shop/public"),
+                        version: crate::runtime::Version::parse("8.4.23").unwrap(),
+                        socket: PathBuf::from("/run/php/8.4.23.sock"),
                     },
                 ),
                 site(
@@ -199,7 +255,7 @@ mod tests {
         let routes = config["apps"]["http"]["servers"]["devspace_https"]["routes"]
             .as_array()
             .unwrap();
-        assert_eq!(routes.len(), 4, "three sites and the fallback");
+        assert_eq!(routes.len(), 5, "four sites and the fallback");
         assert_eq!(
             routes[0]["match"][0]["host"],
             json!(["blog.internal", "*.blog.internal"])
@@ -212,11 +268,25 @@ mod tests {
             routes[1]["handle"][0]["upstreams"],
             json!([{"dial": "127.0.0.1:3000"}])
         );
-        assert_eq!(routes[2]["handle"][0]["status_code"], json!(503));
-        let body = routes[2]["handle"][0]["body"].as_str().unwrap();
+        let php = &routes[2]["handle"][0];
+        assert_eq!(php["handler"], json!("subroute"));
+        assert_eq!(
+            php["routes"][0]["handle"][0],
+            json!({"handler": "vars", "root": "/src/shop/public"})
+        );
+        assert_eq!(
+            php["routes"][3]["handle"][0]["upstreams"],
+            json!([{"dial": "unix//run/php/8.4.23.sock"}])
+        );
+        assert_eq!(
+            php["routes"][3]["handle"][0]["transport"]["protocol"],
+            json!("fastcgi")
+        );
+        assert_eq!(routes[3]["handle"][0]["status_code"], json!(503));
+        let body = routes[3]["handle"][0]["body"].as_str().unwrap();
         assert!(body.contains("broken.internal is not served"), "{body}");
         assert!(body.contains("no public directory"), "{body}");
-        assert_eq!(routes[3]["handle"][0]["status_code"], json!(404));
+        assert_eq!(routes[4]["handle"][0]["status_code"], json!(404));
         assert_eq!(
             config["apps"]["tls"]["automation"]["policies"][0]["subjects"],
             json!([
@@ -224,6 +294,8 @@ mod tests {
                 "*.blog.internal",
                 "api.internal",
                 "*.api.internal",
+                "shop.internal",
+                "*.shop.internal",
                 "broken.internal",
                 "*.broken.internal"
             ])
