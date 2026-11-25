@@ -3,20 +3,22 @@
 //! Startup sequence: refuse elevated execution, resolve and create the
 //! application directories, load the configuration, initialise logging
 //! (rolling files in the log directory, plus stderr in the foreground), take
-//! the single-instance lock, then serve IPC requests until a shutdown request
-//! or signal.
+//! the single-instance lock, open and migrate the database, then serve IPC
+//! requests until a shutdown request or signal.
 //!
 //! The daemon normally runs in the background, started by
 //! `devspace daemon start`; running `devspaced` directly keeps it in the
 //! foreground (stop it with Ctrl+C).
 
 mod error;
+mod handlers;
 mod server;
 
 use std::process::ExitCode;
 
 use clap::Parser;
 use devspace_core::config::GlobalConfig;
+use devspace_core::db::Database;
 use devspace_core::instance::InstanceLock;
 use devspace_core::logging::{self, LogFile, LogTargets};
 use devspace_core::{AppPaths, error::report};
@@ -82,14 +84,17 @@ fn run(args: &Args) -> Result<(), DaemonError> {
         lock = %lock.path().display(),
         "daemon starting"
     );
+    // Opened after taking the lock: only one daemon ever writes to it.
+    let db = Database::open(&paths.database_file())?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("devspaced-worker")
         .build()
         .map_err(DaemonError::Runtime)?;
-    let result = runtime.block_on(server::run(&paths));
-    // Cancel any remaining task before releasing the lock.
+    let result = runtime.block_on(server::run(&paths, db));
+    // Cancel any remaining task, and close the database, before releasing
+    // the lock.
     drop(runtime);
     drop(lock);
     result?;

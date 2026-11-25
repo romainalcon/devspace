@@ -25,7 +25,7 @@ Legend: ✅ done · 🔄 in progress · ⏳ planned
 - ⏳ First CI run on all platforms: the repository has no remote yet, so the
   workflow has never run.
 
-## M1 — Daemon & IPC 🔄 (awaiting validation)
+## M1 — Daemon & IPC ✅
 
 - ✅ Tokio runtime in the daemon, graceful shutdown on `SIGINT`/`SIGTERM`/
   `SIGHUP` (Unix) and console events (Windows).
@@ -46,13 +46,32 @@ Legend: ✅ done · 🔄 in progress · ⏳ planned
   `kill -9` recovery, startup failure report, foreground Ctrl+C).
 - ✅ `clippy -D warnings` cross-checked for Windows x86_64 and Linux x86_64
   (compilation only).
+- ✅ Validated on macOS ARM64; M2 started on 2026-11-25.
 - ⏳ Execution on Windows and Linux (CI, once a remote exists). The Windows
   named-pipe ACL and peer checks have only been compiled, never run.
 
-## M2 — Project registry ⏳
+## M2 — Project registry 🔄 (awaiting validation)
 
-- SQLite storage in `data_dir` with migrations.
-- `devspace project add|list|remove`, per-project manifest format.
+- ✅ SQLite storage (`rusqlite`, bundled SQLite) in `<data>/devspace.db`,
+  opened only by the daemon after it takes the instance lock; WAL journal.
+- ✅ Schema migrations tracked in `PRAGMA user_version`, one transaction per
+  migration; databases from a newer DevSpace are refused, never modified.
+- ✅ Project registry: unique DNS-label names, unique canonical paths,
+  registration never touches the project directory.
+- ✅ Per-project manifest `devspace.toml` (schema v1, optional, strict,
+  64 KiB max): `project.name`.
+- ✅ IPC protocol version 2: `project_add`, `project_list`,
+  `project_remove`, typed `error` responses.
+- ✅ `devspace project add [PATH] [--name]`, `project list`,
+  `project remove <NAME>`.
+- ✅ Unit tests (names, manifest, migrations, registry) and an end-to-end
+  test of the registry through the daemon, including persistence across
+  restarts.
+- ✅ Manual run on macOS ARM64.
+- ⚠️ Cross-target `clippy` from macOS now covers `platform` and `ipc` only:
+  the bundled SQLite needs a C toolchain for the target, so `core`,
+  `daemon` and `cli` are only checked on their native CI runners.
+- ⏳ Execution on Windows and Linux (CI, once a remote exists).
 
 ## M3 — Web server, domains & privileged helper ⏳
 

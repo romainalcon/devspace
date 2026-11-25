@@ -9,7 +9,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use devspace_core::AppPaths;
-use devspace_ipc::{Client, Endpoint, IpcError, PeerInfo, Request, Response};
+use devspace_ipc::{Client, Endpoint, ErrorCode, IpcError, PeerInfo, Request, Response};
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -128,6 +128,95 @@ async fn serve_refuse_second_instance_and_shut_down() {
     let mut client = wait_until_ready(&endpoint, &mut child).await;
     client.request(Request::Shutdown).await.unwrap();
     assert!(wait_for_exit(&mut child).await.success());
+}
+
+async fn start_daemon(home: &Path) -> (Child, Client) {
+    let mut child = daemon_command(home).stderr(Stdio::null()).spawn().unwrap();
+    let client = wait_until_ready(&endpoint(home), &mut child).await;
+    (child, client)
+}
+
+async fn stop_daemon(mut child: Child, mut client: Client) {
+    client.request(Request::Shutdown).await.unwrap();
+    assert!(wait_for_exit(&mut child).await.success());
+}
+
+fn error_code(response: Response) -> ErrorCode {
+    match response {
+        Response::Error(error) => error.code,
+        other => panic!("expected an error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn project_registry_is_served_and_persisted() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let blog = workspace.path().join("Blog");
+    std::fs::create_dir(&blog).unwrap();
+    let blog = devspace_platform::fs::canonicalize(&blog).unwrap();
+
+    let (child, mut client) = start_daemon(home.path()).await;
+    let Response::ProjectAdded(added) = client
+        .request(Request::ProjectAdd {
+            path: blog.clone(),
+            name: None,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("expected project_added");
+    };
+    assert_eq!(added.name, "blog");
+    assert_eq!(added.path, blog);
+
+    // Refusals are reported as typed errors and keep the connection usable.
+    let duplicate = Request::ProjectAdd {
+        path: blog.clone(),
+        name: Some("other".into()),
+    };
+    assert_eq!(
+        error_code(client.request(duplicate).await.unwrap()),
+        ErrorCode::AlreadyExists
+    );
+    let relative = Request::ProjectAdd {
+        path: "relative".into(),
+        name: None,
+    };
+    assert_eq!(
+        error_code(client.request(relative).await.unwrap()),
+        ErrorCode::InvalidRequest
+    );
+    let bad_name = Request::ProjectRemove {
+        name: "Not Valid".into(),
+    };
+    assert_eq!(
+        error_code(client.request(bad_name).await.unwrap()),
+        ErrorCode::InvalidRequest
+    );
+    stop_daemon(child, client).await;
+
+    // The registry survives a restart.
+    let (child, mut client) = start_daemon(home.path()).await;
+    assert_eq!(
+        client.request(Request::ProjectList).await.unwrap(),
+        Response::Projects {
+            projects: vec![added.clone()]
+        }
+    );
+    let removed = Request::ProjectRemove {
+        name: "blog".into(),
+    };
+    assert_eq!(
+        client.request(removed.clone()).await.unwrap(),
+        Response::ProjectRemoved(added)
+    );
+    assert_eq!(
+        error_code(client.request(removed).await.unwrap()),
+        ErrorCode::NotFound
+    );
+    assert!(blog.is_dir());
+    stop_daemon(child, client).await;
 }
 
 // Signals are a Unix concept; the Windows console events cannot be sent to a

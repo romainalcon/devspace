@@ -26,7 +26,7 @@ pub use client::Client;
 pub use devspace_platform::local_socket::{ClientStream, Endpoint, Listener, ServerStream};
 pub use error::{IpcError, Result};
 pub use protocol::{
-    ClientMessage, DaemonInfo, DaemonStatus, PROTOCOL_VERSION, PeerInfo, Request, Response,
-    ServerMessage,
+    ClientMessage, DaemonInfo, DaemonStatus, ErrorCode, ErrorResponse, PROTOCOL_VERSION, PeerInfo,
+    ProjectInfo, Request, Response, ServerMessage,
 };
 pub use server::ServerConnection;

@@ -28,6 +28,9 @@ pub const HOME_ENV_VAR: &str = "DEVSPACE_HOME";
 /// File name of the global configuration inside [`AppPaths::config_dir`].
 pub const CONFIG_FILE_NAME: &str = "config.toml";
 
+/// File name of the SQLite database inside [`AppPaths::data_dir`].
+pub const DATABASE_FILE_NAME: &str = "devspace.db";
+
 /// File name of the daemon single-instance lock inside [`AppPaths::runtime_dir`].
 pub const DAEMON_LOCK_FILE_NAME: &str = "devspaced.lock";
 
@@ -196,6 +199,12 @@ impl AppPaths {
         self.config_dir.join(CONFIG_FILE_NAME)
     }
 
+    /// Path of the SQLite database owned by the daemon.
+    #[must_use]
+    pub fn database_file(&self) -> PathBuf {
+        self.data_dir.join(DATABASE_FILE_NAME)
+    }
+
     /// Path of the daemon single-instance lock file.
     #[must_use]
     pub fn daemon_lock_file(&self) -> PathBuf {
@@ -361,6 +370,7 @@ mod tests {
         assert_eq!(paths.log_dir, Path::new("/opt/ds/logs"));
         assert_eq!(paths.config_file(), Path::new("/opt/ds/config/config.toml"));
         assert_eq!(paths.runtime_dir, Path::new("/opt/ds/run"));
+        assert_eq!(paths.database_file(), Path::new("/opt/ds/data/devspace.db"));
         assert_eq!(
             paths.daemon_lock_file(),
             Path::new("/opt/ds/run/devspaced.lock")

@@ -1,10 +1,13 @@
 //! `devspace` command-line interface.
 //!
 //! Local commands (`paths`, `config`) work without the daemon; `daemon`
-//! commands manage the daemon lifecycle through the IPC protocol.
+//! commands manage the daemon lifecycle and `project` commands use the
+//! registry owned by the daemon, both through the IPC protocol.
 
+mod client;
 mod daemon;
 mod error;
+mod project;
 
 use std::process::ExitCode;
 
@@ -15,6 +18,7 @@ use devspace_core::{AppPaths, error::report};
 
 use crate::daemon::DaemonCommand;
 use crate::error::CliError;
+use crate::project::ProjectCommand;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -37,6 +41,9 @@ enum Command {
     /// Manage the DevSpace daemon.
     #[command(subcommand)]
     Daemon(DaemonCommand),
+    /// Manage registered projects (requires the daemon).
+    #[command(subcommand)]
+    Project(ProjectCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -90,6 +97,7 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
             println!("created {}", file.display());
         }
         Command::Daemon(command) => return daemon::execute(command, &paths),
+        Command::Project(command) => return project::execute(command, &paths),
     }
     Ok(ExitCode::SUCCESS)
 }

@@ -7,8 +7,9 @@ use std::time::{Duration, Instant};
 
 use devspace_core::AppPaths;
 use devspace_core::instance::InstanceLock;
-use devspace_ipc::{Client, Endpoint, IpcError, PeerInfo, Request, Response};
+use devspace_ipc::{Endpoint, Request, Response};
 
+use crate::client::{self, try_connect, unexpected};
 use crate::error::CliError;
 
 /// Exit code of `devspace daemon status` when the daemon is not running
@@ -37,33 +38,13 @@ pub enum DaemonCommand {
 /// Runs a daemon subcommand.
 pub fn execute(command: DaemonCommand, paths: &AppPaths) -> Result<ExitCode, CliError> {
     let endpoint = Endpoint::new(&paths.runtime_dir)?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(CliError::Runtime)?;
-    runtime.block_on(async {
+    client::block_on(async {
         match command {
             DaemonCommand::Start => start(paths, &endpoint).await,
             DaemonCommand::Stop => stop(paths, &endpoint).await,
             DaemonCommand::Status => status(paths, &endpoint).await,
         }
-    })
-}
-
-fn peer_info() -> PeerInfo {
-    PeerInfo {
-        name: "devspace-cli".to_owned(),
-        version: env!("CARGO_PKG_VERSION").to_owned(),
-    }
-}
-
-/// Connects to the daemon; `Ok(None)` means that it is not running.
-async fn try_connect(endpoint: &Endpoint) -> Result<Option<Client>, CliError> {
-    match Client::connect(endpoint, peer_info()).await {
-        Ok(client) => Ok(Some(client)),
-        Err(IpcError::NotRunning { .. }) => Ok(None),
-        Err(err) => Err(err.into()),
-    }
+    })?
 }
 
 async fn status(paths: &AppPaths, endpoint: &Endpoint) -> Result<ExitCode, CliError> {
@@ -76,10 +57,7 @@ async fn status(paths: &AppPaths, endpoint: &Endpoint) -> Result<ExitCode, CliEr
         return Ok(ExitCode::from(NOT_RUNNING_EXIT_CODE));
     };
     let Response::Status(status) = client.request(Request::Status).await? else {
-        return Err(IpcError::UnexpectedMessage {
-            expected: "status response",
-        }
-        .into());
+        return Err(unexpected("status response"));
     };
     println!("status:   running");
     println!("pid:      {}", status.pid);
@@ -153,14 +131,8 @@ async fn stop(paths: &AppPaths, endpoint: &Endpoint) -> Result<ExitCode, CliErro
         return Ok(ExitCode::SUCCESS);
     };
     let pid = client.daemon().pid;
-    match client.request(Request::Shutdown).await? {
-        Response::ShuttingDown => {}
-        _ => {
-            return Err(IpcError::UnexpectedMessage {
-                expected: "shutdown acknowledgement",
-            }
-            .into());
-        }
+    if client.request(Request::Shutdown).await? != Response::ShuttingDown {
+        return Err(unexpected("shutdown acknowledgement"));
     }
     drop(client);
 

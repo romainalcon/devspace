@@ -179,7 +179,7 @@ mod tests {
             while let Some((id, request)) = conn.next_request().await.unwrap() {
                 let response = match request {
                     Request::Ping => Response::Pong,
-                    Request::Status | Request::Shutdown => Response::ShuttingDown,
+                    _ => Response::ShuttingDown,
                 };
                 conn.respond(id, response).await.unwrap();
             }

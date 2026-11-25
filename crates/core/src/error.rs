@@ -119,6 +119,174 @@ pub enum Error {
     /// A global `tracing` subscriber was already installed.
     #[error("logging is already initialised")]
     LoggingAlreadyInitialised(#[source] tracing::subscriber::SetGlobalDefaultError),
+
+    /// The database could not be opened.
+    #[error("failed to open database `{}`", path.display())]
+    DatabaseOpen {
+        /// Database file.
+        path: PathBuf,
+        /// SQLite error.
+        #[source]
+        source: rusqlite::Error,
+    },
+
+    /// The database was created by a newer version of DevSpace.
+    #[error(
+        "database `{}` has schema version {found}, but this version of DevSpace supports \
+         up to version {supported}; upgrade DevSpace",
+        path.display()
+    )]
+    DatabaseTooNew {
+        /// Database file.
+        path: PathBuf,
+        /// Version found in the database.
+        found: u32,
+        /// Latest version known by this build.
+        supported: u32,
+    },
+
+    /// A database migration failed; the database is left at the previous
+    /// schema version.
+    #[error("failed to migrate database `{}` to schema version {version}", path.display())]
+    DatabaseMigration {
+        /// Database file.
+        path: PathBuf,
+        /// Version that could not be reached.
+        version: u32,
+        /// SQLite error.
+        #[source]
+        source: rusqlite::Error,
+    },
+
+    /// A database query failed.
+    #[error("database error while {operation}")]
+    Database {
+        /// What was being done.
+        operation: &'static str,
+        /// SQLite error.
+        #[source]
+        source: rusqlite::Error,
+    },
+
+    /// A project name does not follow the naming rules.
+    #[error("invalid project name `{name}`: {reason}")]
+    InvalidProjectName {
+        /// Rejected name.
+        name: String,
+        /// Broken rule.
+        reason: &'static str,
+    },
+
+    /// No valid project name can be derived from the directory name.
+    #[error(
+        "cannot derive a project name from directory `{}`; choose one with `--name` \
+         or in the project manifest",
+        path.display()
+    )]
+    ProjectNameUnavailable {
+        /// Project directory.
+        path: PathBuf,
+    },
+
+    /// A project path is relative; the daemon cannot interpret it.
+    #[error("project path `{}` must be absolute", path.display())]
+    RelativeProjectPath {
+        /// Rejected path.
+        path: PathBuf,
+    },
+
+    /// A project path does not exist or cannot be resolved.
+    #[error("cannot access project directory `{}`", path.display())]
+    ProjectPath {
+        /// Requested path.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
+    /// A project path is not a directory.
+    #[error("project path `{}` is not a directory", path.display())]
+    ProjectNotDirectory {
+        /// Resolved path.
+        path: PathBuf,
+    },
+
+    /// A project path is not valid Unicode and cannot be stored.
+    #[error("project path `{}` is not valid UTF-8", path.display())]
+    NonUnicodeProjectPath {
+        /// Resolved path.
+        path: PathBuf,
+    },
+
+    /// A project manifest exists but could not be read.
+    #[error("failed to read project manifest `{}`", path.display())]
+    ManifestRead {
+        /// Manifest file.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
+    /// A project manifest exceeds the size limit.
+    #[error("project manifest `{}` exceeds the limit of {max} bytes", path.display())]
+    ManifestTooLarge {
+        /// Manifest file.
+        path: PathBuf,
+        /// Maximum accepted size.
+        max: u64,
+    },
+
+    /// A project manifest is not valid TOML or does not match the schema.
+    #[error("invalid project manifest `{}`", path.display())]
+    ManifestParse {
+        /// Manifest file.
+        path: PathBuf,
+        /// Parser error, including the location of the problem.
+        #[source]
+        source: Box<toml::de::Error>,
+    },
+
+    /// A project manifest declares an unsupported schema version.
+    #[error(
+        "project manifest `{}` uses schema version {found}, \
+         but this version of DevSpace supports version {supported}",
+        path.display()
+    )]
+    UnsupportedManifestVersion {
+        /// Manifest file.
+        path: PathBuf,
+        /// Version found in the file.
+        found: u32,
+        /// Version supported by this build.
+        supported: u32,
+    },
+
+    /// Another project already uses this name.
+    #[error("a project named `{name}` is already registered (at `{}`)", path.display())]
+    ProjectNameTaken {
+        /// Requested name.
+        name: String,
+        /// Directory of the existing project.
+        path: PathBuf,
+    },
+
+    /// This directory is already registered.
+    #[error("directory `{}` is already registered as project `{name}`", path.display())]
+    ProjectPathTaken {
+        /// Requested directory.
+        path: PathBuf,
+        /// Name of the existing project.
+        name: String,
+    },
+
+    /// No project has this name.
+    #[error("no project named `{name}` is registered")]
+    ProjectNotFound {
+        /// Requested name.
+        name: String,
+    },
 }
 
 /// Formats an error and its whole `source()` chain on multiple lines.

@@ -26,19 +26,21 @@ that keep it maintainable. Any change to these rules must be documented here
                          └─────────────────────┘
 ```
 
-Status in M1: the daemon serves the IPC protocol; the CLI uses it for the
-daemon lifecycle (`devspace daemon start|stop|status`) and uses
-`devspace-core` directly for local, daemon-independent commands
-(configuration, paths). The desktop application is not connected yet (M6).
+Status in M2: the daemon serves the IPC protocol and owns the SQLite
+database; the CLI uses IPC for the daemon lifecycle
+(`devspace daemon start|stop|status`) and the project registry
+(`devspace project …`), and uses `devspace-core` directly for local,
+daemon-independent commands (configuration, paths). The desktop application
+is not connected yet (M6).
 
 ## Crates
 
 | Crate | Path | Kind | Responsibility |
 |---|---|---|---|
-| `devspace-platform` | `crates/platform` | lib | **Only** place for platform-specific code: directory conventions, privilege detection, local sockets / named pipes and peer identity, shutdown signals, detached processes; later service registration, trust stores. Exposes portable APIs. |
-| `devspace-core` | `crates/core` | lib | Business logic: typed configuration, errors, logging setup, single-instance lock; later projects, runtimes, services. No Tauri, no UI, no transport. |
+| `devspace-platform` | `crates/platform` | lib | **Only** place for platform-specific code: directory conventions, privilege detection, local sockets / named pipes and peer identity, shutdown signals, detached processes, path canonicalisation; later service registration, trust stores. Exposes portable APIs. |
+| `devspace-core` | `crates/core` | lib | Business logic: typed configuration, errors, logging setup, single-instance lock, SQLite storage and migrations, project registry and manifest; later runtimes, services. No Tauri, no UI, no transport. |
 | `devspace-ipc` | `crates/ipc` | lib | Protocol between daemon and clients: messages, framing, versioning, handshake, typed client and server connections. Re-exports the transport of `devspace-platform`. |
-| `devspace-daemon` | `crates/daemon` | bin `devspaced` | Long-running process owning projects, services and processes. M1: IPC server and lifecycle. |
+| `devspace-daemon` | `crates/daemon` | bin `devspaced` | Long-running process owning projects, services and processes. M2: IPC server, lifecycle, database owner, project requests. |
 | `devspace-cli` | `crates/cli` | bin `devspace` | Command-line client. |
 | `devspace-desktop` | `apps/desktop/src-tauri` | bin + lib | Tauri 2 shell with a Vue 3 / TypeScript frontend. Starter template in M0. |
 
@@ -153,6 +155,39 @@ handshake messages never change shape; any other change increments
 
 **Timeouts**: connect 5 s, handshake 5 s (both sides), request 10 s.
 
+### Storage
+
+- One SQLite database, `<data>/devspace.db` (`AppPaths::database_file`),
+  accessed through `devspace_core::db::Database` (`rusqlite` with the
+  bundled SQLite, so every platform runs the same SQLite version).
+- Only the daemon opens it, after taking the instance lock: there is a
+  single writer and clients never read the file. WAL journal, foreign keys
+  on, 5 s busy timeout.
+- Schema version in `PRAGMA user_version`. `db::MIGRATIONS` is an
+  append-only list of SQL scripts; each pending one runs in its own
+  `IMMEDIATE` transaction together with the version bump. A database newer
+  than the build is refused without modification (no downgrade).
+- Tables use `STRICT` typing. Schema v1: `projects(id, name UNIQUE,
+  path UNIQUE, added_at)`.
+- The connection is synchronous: the daemon keeps it behind a
+  `std::sync::Mutex` and uses it from `spawn_blocking` tasks, never from
+  async worker threads.
+
+### Projects
+
+- `devspace_core::project`: `ProjectName` (validated DNS label), `Project`,
+  and the registry operations on `Database` (`add_project`,
+  `list_projects`, `remove_project`).
+- Paths sent to the daemon must be absolute (the CLI resolves relative ones
+  against its own working directory); the daemon canonicalises them with
+  `devspace_platform::fs::canonicalize` (no `\\?\` prefix on Windows) and
+  stores them as UTF-8 text.
+- The optional manifest `devspace.toml` (`project::manifest`) is parsed
+  with the same strict rules as the global configuration. It is read when
+  a project is added, never written.
+- Core errors are mapped to IPC `ErrorCode`s in the daemon
+  (`handlers::error_response`); the message is the full error chain.
+
 ### Daemon lifecycle
 
 1. `ensure_unprivileged`, resolve and create directories, load
@@ -160,12 +195,13 @@ handshake messages never change shape; any other change increments
 2. Take the single-instance lock `<run>/devspaced.lock`
    (`devspace_core::instance::InstanceLock`, `File::try_lock`). The OS
    releases it when the process dies, so a crash never blocks a restart.
+   Then open and migrate the database.
 3. Build the multi-threaded Tokio runtime, bind the endpoint, install
    signal handlers, accept connections (one task per connection).
 4. On `Shutdown` request or signal (`SIGINT`, `SIGTERM`, `SIGHUP`; Windows
    Ctrl+C/Break, close, logoff, shutdown): drop the listener (endpoint
    removed), notify connections, wait up to 5 s, abort the rest, drop the
-   runtime, release the lock.
+   runtime (which closes the database), release the lock.
 
 `devspace daemon start` spawns `devspaced --background` from the directory of
 the `devspace` executable, detached (`setsid` on Unix, `DETACHED_PROCESS` on
@@ -209,3 +245,8 @@ security descriptor APIs), each block having a `SAFETY:` comment.
 | 13 | 2026-11-25 | Daily log rotation with `tracing-appender`, 7 files kept, blocking writer. | Low log volume; avoids the lossy non-blocking writer and its flush guard. |
 | 14 | 2026-11-25 | Runtime directory in `$XDG_RUNTIME_DIR` on Linux, in Application Support on macOS (not `/tmp`). | Per-user, private locations; avoids shared temporary directories. |
 | 15 | 2026-11-25 | `devspace daemon stop` waits for the instance lock rather than for the endpoint to disappear. | The lock is released last, so a `stop` followed by `start` never races with a daemon still draining connections. |
+| 16 | 2026-11-25 | `rusqlite` with bundled SQLite, synchronous, behind a mutex in `spawn_blocking`; no `sqlx`. | Single writer (the daemon) and tiny queries; no async driver or compile-time database needed; same SQLite everywhere, including Windows. |
+| 17 | 2026-11-25 | Hand-written migrations in `PRAGMA user_version` rather than a migration crate. | A dozen lines, no dependency, one transaction per step; newer databases are refused. |
+| 18 | 2026-11-25 | The daemon reads the project manifest, not the CLI. | The daemon is the source of truth; the desktop app will only send a path. |
+| 19 | 2026-11-25 | Project names are DNS labels; directory names are normalised, explicit names are only validated. | Names become `<name>.test` domains in M3; deriving a name must not fail on common directory names, but an explicit choice is never altered silently. |
+| 20 | 2026-11-25 | Project paths stored canonical and as UTF-8 text; non-UTF-8 paths refused. | One entry per directory whatever the path used; JSON (IPC) and SQLite text require Unicode. |

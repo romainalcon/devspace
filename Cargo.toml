@@ -54,6 +54,12 @@ directories = "6"
 libc = "0.2"
 windows-sys = "0.61"
 
+# Storage
+rusqlite = { version = "0.43", default-features = false, features = ["bundled"] }
+
+# Filesystem
+dunce = "1"
+
 # Tests
 tempfile = "3"
 

@@ -29,8 +29,8 @@ binaries and **without requiring Docker**.
 
 ## Functional requirements
 
-Requirements are tagged with the milestone delivering them. M0 and M1 items
-are implemented today.
+Requirements are tagged with the milestone delivering them. M0, M1 and M2
+items are implemented today.
 
 ### Implemented (M0)
 
@@ -59,11 +59,22 @@ are implemented today.
 | F-1.7 | The daemon writes daily-rotated logs to the log directory and keeps 7 files; `devspaced` run directly also logs to stderr. |
 | F-1.8 | `devspace paths` also prints the runtime directory. |
 
+### Implemented (M2)
+
+| ID | Requirement |
+|---|---|
+| F-2.1 | The daemon stores its state in an SQLite database, `<data>/devspace.db`, created and migrated at startup. A database created by a newer DevSpace makes the daemon refuse to start and is left untouched. |
+| F-2.2 | `devspace project add [PATH] [--name NAME]` registers a directory (default: the current directory). The name is `--name`, else `project.name` from the project's `devspace.toml`, else the directory name normalised (lowercased, other characters turned into `-`). |
+| F-2.3 | A directory is registered once, under its canonical path (symbolic links resolved); names are unique. Missing paths, non-directories, invalid names or manifests and duplicates are refused with an explanation. |
+| F-2.4 | `devspace project list` prints the registered projects sorted by name. |
+| F-2.5 | `devspace project remove NAME` unregisters a project. |
+| F-2.6 | Registering or removing a project never creates, modifies or deletes files in the project directory. |
+| F-2.7 | `project` commands require the daemon; when it is not running they fail with a hint to run `devspace daemon start`. |
+
 ### Planned
 
 | ID | Milestone | Requirement |
 |---|---|---|
-| F-2 | M2 | Project registry persisted in SQLite: add, list, remove projects. |
 | F-3 | M3 | Caddy-based reverse proxy with `*.test` domains and a locally trusted CA, configured through an isolated privileged helper after explicit approval. |
 | F-4 | M4 | Runtime package manager: download, verify checksums and signatures, extract safely (no path traversal), switch versions. |
 | F-5 | M5 | Services (MySQL/MariaDB, PostgreSQL, Redis, …) supervised by the daemon. |
@@ -82,7 +93,25 @@ format = "compact"        # compact | pretty
 Rules: all keys optional, unknown keys rejected, file never overwritten by
 DevSpace.
 
-## IPC protocol reference (version 1)
+## Project manifest reference (schema version 1)
+
+File `devspace.toml` at the root of a project, optional, at most 64 KiB:
+
+```toml
+schema_version = 1        # required to equal 1 if present
+
+[project]
+name = "my-app"           # optional; see project names below
+```
+
+Rules: all keys optional, unknown keys rejected, file only read by DevSpace
+(never written, nothing in it is executed).
+
+Project names: 1–63 characters among lowercase ASCII letters, digits and
+`-`, not starting or ending with `-` (a DNS label, for the `*.test`
+domains of M3).
+
+## IPC protocol reference (version 2)
 
 Frames: 4-byte big-endian payload length, then a UTF-8 JSON object; payloads
 over 1 MiB are rejected. Every message carries a `type` tag.
@@ -100,6 +129,16 @@ over 1 MiB are rejected. Every message carries a `type` tag.
 | `ping` | `pong` |
 | `status` | `status` with `version`, `pid`, `uptime_secs` |
 | `shutdown` | `shutting_down`, then the daemon stops |
+| `project_add` with `path` (absolute), optional `name` | `project_added` with `name`, `path`, `added_at` |
+| `project_list` | `projects` with `projects: [{name, path, added_at}]` sorted by name |
+| `project_remove` with `name` | `project_removed` with `name`, `path`, `added_at` |
+
+Any request may instead be answered with `error`: `code` (`invalid_request`,
+`already_exists`, `not_found`, `internal`) and a human-readable `message`;
+the connection stays open. `added_at` is in seconds since the Unix epoch.
+
+Version history: 1 (M1) `ping`, `status`, `shutdown`; 2 (M2) project
+requests and `error` responses.
 
 Rules: `hello` must come first and within 5 s; unknown or malformed messages
 close the connection; the handshake messages never change shape and any

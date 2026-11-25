@@ -5,15 +5,19 @@
 //!
 //! Modules:
 //! - [`config`]: typed global configuration (`config.toml`).
+//! - [`db`]: SQLite storage of the daemon, with schema migrations.
 //! - [`error`]: the crate-wide [`Error`] type and error reporting helpers.
 //! - [`instance`]: single-instance lock of the daemon.
 //! - [`logging`]: `tracing` subscriber initialisation (stderr, rolling files).
+//! - [`project`]: project registry and per-project manifest (`devspace.toml`).
 //! - [`ensure_unprivileged`]: guard refusing elevated execution.
 
 pub mod config;
+pub mod db;
 pub mod error;
 pub mod instance;
 pub mod logging;
+pub mod project;
 
 pub use devspace_platform::AppPaths;
 pub use error::{Error, Result};

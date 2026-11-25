@@ -99,6 +99,22 @@ pub enum CliError {
         secs: u64,
     },
 
+    /// A command needs the daemon, which is not running.
+    #[error("the DevSpace daemon is not running; start it with `devspace daemon start`")]
+    DaemonNotRunning,
+
+    /// The daemon refused or failed to process a request.
+    #[error("{message}")]
+    Refused {
+        /// Explanation sent by the daemon.
+        message: String,
+    },
+
+    /// The current directory is unknown, so a relative path cannot be
+    /// resolved.
+    #[error("failed to determine the current directory")]
+    CurrentDir(#[source] io::Error),
+
     /// A process holds the instance lock but does not accept connections.
     #[error(
         "a daemon process holds `{}` but does not accept connections; it may still be \

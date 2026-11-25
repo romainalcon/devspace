@@ -5,6 +5,7 @@
 //! portable API exposed here and never branch on the platform themselves.
 //!
 //! Modules:
+//! - [`fs`]: portable filesystem helpers (path canonicalisation).
 //! - [`paths`]: resolution of the application directories following each OS
 //!   conventions.
 //! - [`privileges`]: detection of elevated (root / administrator) execution.
@@ -14,6 +15,7 @@
 //! - [`process`]: spawning detached background processes.
 
 pub mod error;
+pub mod fs;
 pub mod local_socket;
 pub mod paths;
 pub mod privileges;

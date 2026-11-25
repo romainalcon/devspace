@@ -7,13 +7,12 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use devspace_core::AppPaths;
+use devspace_core::db::Database;
 use devspace_core::error::report;
-use devspace_ipc::{
-    DaemonInfo, DaemonStatus, Endpoint, Listener, Request, Response, ServerConnection, ServerStream,
-};
+use devspace_ipc::{Endpoint, Listener, Request, ServerConnection, ServerStream};
 use devspace_platform::PlatformError;
 use devspace_platform::signals::ShutdownSignals;
 use tokio::sync::watch;
@@ -21,6 +20,7 @@ use tokio::task::{JoinError, JoinSet};
 use tracing::Instrument as _;
 
 use crate::error::DaemonError;
+use crate::handlers::{self, DaemonState};
 
 /// Maximum time given to open connections once shutdown has started.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -29,32 +29,8 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// descriptor exhaustion) does not turn into a busy loop.
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 
-/// State shared by all connections.
-#[derive(Debug)]
-struct DaemonState {
-    started: Instant,
-    pid: u32,
-}
-
-impl DaemonState {
-    fn info(&self) -> DaemonInfo {
-        DaemonInfo {
-            version: env!("CARGO_PKG_VERSION").to_owned(),
-            pid: self.pid,
-        }
-    }
-
-    fn status(&self) -> DaemonStatus {
-        DaemonStatus {
-            version: env!("CARGO_PKG_VERSION").to_owned(),
-            pid: self.pid,
-            uptime_secs: self.started.elapsed().as_secs(),
-        }
-    }
-}
-
 /// Serves IPC requests until shutdown.
-pub(crate) async fn run(paths: &AppPaths) -> Result<(), DaemonError> {
+pub(crate) async fn run(paths: &AppPaths, db: Database) -> Result<(), DaemonError> {
     let endpoint = Endpoint::new(&paths.runtime_dir)?;
     let mut listener = Listener::bind(&endpoint)?;
     let mut signals = match ShutdownSignals::install() {
@@ -68,10 +44,7 @@ pub(crate) async fn run(paths: &AppPaths) -> Result<(), DaemonError> {
         }
     };
 
-    let state = Arc::new(DaemonState {
-        started: Instant::now(),
-        pid: std::process::id(),
-    });
+    let state = Arc::new(DaemonState::new(db));
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let shutdown_tx = Arc::new(shutdown_tx);
     let mut connections = JoinSet::new();
@@ -178,16 +151,13 @@ async fn handle_connection(
             }
         };
         tracing::debug!(id, ?request, "request received");
-        let response = match request {
-            Request::Ping => Response::Pong,
-            Request::Status => Response::Status(state.status()),
-            Request::Shutdown => Response::ShuttingDown,
-        };
+        let is_shutdown = request == Request::Shutdown;
+        let response = handlers::handle(request, &state).await;
         if let Err(err) = conn.respond(id, response).await {
             tracing::warn!(error = %report(&err), "failed to send response");
             break;
         }
-        if request == Request::Shutdown {
+        if is_shutdown {
             shutdown.send_replace(true);
             break;
         }
