@@ -1,0 +1,19 @@
+[package]
+name = "devspace-cli"
+description = "DevSpace command-line interface."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "devspace"
+path = "src/main.rs"
+
+[dependencies]
+devspace-core.workspace = true
+clap.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

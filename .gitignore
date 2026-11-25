@@ -1,0 +1,29 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Frontend
+**/node_modules/
+**/dist/
+
+# IDE
+.idea/
+.vscode/
+
+# macOS
+.DS_Store
+
+# Environment
+.env
+.env.local
+
+# Application data
+/data/
+/storage/
+/logs/
+/downloads/
+/packages/
+
+# Temporary files
+*.tmp
+*.log

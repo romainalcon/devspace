@@ -1,0 +1,18 @@
+[package]
+name = "devspace-daemon"
+description = "DevSpace background daemon, single source of truth for projects, services and processes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "devspaced"
+path = "src/main.rs"
+
+[dependencies]
+devspace-core.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

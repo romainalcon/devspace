@@ -1,0 +1,71 @@
+[workspace]
+resolver = "3"
+
+members = [
+    "crates/core",
+    "crates/daemon",
+    "crates/cli",
+    "crates/ipc",
+    "crates/platform",
+    "apps/desktop/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+# Shared dependency versions. Only dependencies actually used by at least one
+# crate are declared here; new ones are added with the milestone needing them.
+[workspace.dependencies]
+# Internal crates
+devspace-core = { path = "crates/core" }
+devspace-ipc = { path = "crates/ipc" }
+devspace-platform = { path = "crates/platform" }
+
+# Serialization and configuration
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+
+# Errors
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "std",
+    "fmt",
+    "ansi",
+    "env-filter",
+] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Platform
+directories = "6"
+libc = "0.2"
+windows-sys = "0.61"
+
+# Tests
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

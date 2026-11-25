@@ -1,0 +1,14 @@
+[package]
+name = "devspace-ipc"
+description = "IPC protocol shared by the DevSpace daemon and its clients (CLI, desktop)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Dependencies (serde, tokio, transport) will be added in milestone M1 when the
+# protocol is designed. The crate is intentionally empty in M0.
+[dependencies]
+
+[lints]
+workspace = true
