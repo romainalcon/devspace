@@ -58,6 +58,15 @@ pub enum Error {
         supported: u32,
     },
 
+    /// The configuration holds inconsistent values.
+    #[error("invalid configuration file `{}`: {reason}", path.display())]
+    InvalidConfig {
+        /// Configuration file.
+        path: PathBuf,
+        /// Broken rule.
+        reason: &'static str,
+    },
+
     /// The configuration could not be serialized.
     #[error("failed to serialize configuration")]
     ConfigSerialize(#[source] toml::ser::Error),
@@ -263,6 +272,15 @@ pub enum Error {
         supported: u32,
     },
 
+    /// A project manifest holds conflicting settings.
+    #[error("invalid project manifest `{}`: {reason}", path.display())]
+    InvalidManifest {
+        /// Manifest file.
+        path: PathBuf,
+        /// Broken rule.
+        reason: &'static str,
+    },
+
     /// Another project already uses this name.
     #[error("a project named `{name}` is already registered (at `{}`)", path.display())]
     ProjectNameTaken {
@@ -286,6 +304,94 @@ pub enum Error {
     ProjectNotFound {
         /// Requested name.
         name: String,
+    },
+
+    /// Caddy publishes no build for this platform.
+    #[error("no Caddy build is available for this platform")]
+    CaddyUnavailable,
+
+    /// A download could not be started or was refused by the server.
+    #[error("failed to download `{url}`")]
+    Download {
+        /// Requested URL.
+        url: String,
+        /// HTTP client error.
+        #[source]
+        source: Box<ureq::Error>,
+    },
+
+    /// A download was interrupted or exceeded its size limit.
+    #[error("failed to receive `{url}`")]
+    DownloadRead {
+        /// Requested URL.
+        url: String,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
+    /// A downloaded file does not have the expected checksum; it was not
+    /// used.
+    #[error(
+        "checksum mismatch for `{file}`: expected SHA-256 {expected}, got {actual}; \
+         the file was discarded"
+    )]
+    ChecksumMismatch {
+        /// Downloaded file name.
+        file: String,
+        /// Embedded checksum.
+        expected: String,
+        /// Checksum of the received data.
+        actual: String,
+    },
+
+    /// A file could not be extracted from a downloaded archive.
+    #[error("failed to extract from `{}`", path.display())]
+    Archive {
+        /// Archive file.
+        path: PathBuf,
+        /// Extraction error.
+        #[source]
+        source: crate::web::archive::ArchiveError,
+    },
+
+    /// A file or directory of an installation could not be created.
+    #[error("failed to install `{}`", path.display())]
+    InstallFile {
+        /// Path being created.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
+    /// The installed Caddy does not report the expected version.
+    #[error("`{}` is not the expected Caddy build: {detail}", path.display())]
+    CaddyVersion {
+        /// Caddy executable.
+        path: PathBuf,
+        /// What went wrong.
+        detail: String,
+    },
+
+    /// The local certificate authority could not be read.
+    #[error("failed to read the local certificate authority `{}`", path.display())]
+    CaRead {
+        /// Root certificate file.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
+    /// The local certificate authority file is not a certificate.
+    #[error("invalid local certificate authority `{}`", path.display())]
+    CaInvalid {
+        /// Root certificate file.
+        path: PathBuf,
+        /// Parse error.
+        #[source]
+        source: devspace_helper::CertificateError,
     },
 }
 

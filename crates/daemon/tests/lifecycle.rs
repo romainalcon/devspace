@@ -13,6 +13,18 @@ use devspace_ipc::{Client, Endpoint, ErrorCode, IpcError, PeerInfo, Request, Res
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Kills a daemon if the test panics, so that a failed test does not leave
+/// it running.
+struct KillOnPanic(u32);
+
+impl Drop for KillOnPanic {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let _ = devspace_platform::process::kill(self.0);
+        }
+    }
+}
+
 fn peer() -> PeerInfo {
     PeerInfo {
         name: "lifecycle-test".into(),
@@ -73,6 +85,7 @@ async fn serve_refuse_second_instance_and_shut_down() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
+    let _guard = KillOnPanic(child.id());
 
     let mut client = wait_until_ready(&endpoint, &mut child).await;
     assert_eq!(client.daemon().pid, child.id());
@@ -125,6 +138,7 @@ async fn serve_refuse_second_instance_and_shut_down() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
+    let _guard = KillOnPanic(child.id());
     let mut client = wait_until_ready(&endpoint, &mut child).await;
     client.request(Request::Shutdown).await.unwrap();
     assert!(wait_for_exit(&mut child).await.success());
@@ -157,6 +171,7 @@ async fn project_registry_is_served_and_persisted() {
     let blog = devspace_platform::fs::canonicalize(&blog).unwrap();
 
     let (child, mut client) = start_daemon(home.path()).await;
+    let _guard = KillOnPanic(child.id());
     let Response::ProjectAdded(added) = client
         .request(Request::ProjectAdd {
             path: blog.clone(),
@@ -198,6 +213,7 @@ async fn project_registry_is_served_and_persisted() {
 
     // The registry survives a restart.
     let (child, mut client) = start_daemon(home.path()).await;
+    let _guard = KillOnPanic(child.id());
     assert_eq!(
         client.request(Request::ProjectList).await.unwrap(),
         Response::Projects {
@@ -230,6 +246,7 @@ async fn sigterm_triggers_graceful_shutdown() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
+    let _guard = KillOnPanic(child.id());
     let client = wait_until_ready(&endpoint, &mut child).await;
     drop(client);
 
@@ -243,4 +260,96 @@ async fn sigterm_triggers_graceful_shutdown() {
         .runtime_dir
         .join("devspaced.sock");
     assert!(!socket.exists());
+}
+
+/// Unprivileged port currently free on the loopback interface (UDP and TCP).
+fn free_port() -> u16 {
+    loop {
+        let udp = std::net::UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+        let port = udp.local_addr().unwrap().port();
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+}
+
+#[tokio::test]
+async fn dns_and_web_status_are_served() {
+    use devspace_ipc::{DnsServerState, IntegrationStatus, SiteTargetInfo, WebServerState};
+
+    let home = tempfile::tempdir().unwrap();
+    let paths = AppPaths::from_root(home.path());
+    std::fs::create_dir_all(&paths.config_dir).unwrap();
+    let (http, https, dns) = (free_port(), free_port(), free_port());
+    std::fs::write(
+        paths.config_file(),
+        format!("[web]\nhttp_port = {http}\nhttps_port = {https}\ndns_port = {dns}\n"),
+    )
+    .unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let blog = workspace.path().join("blog");
+    std::fs::create_dir_all(blog.join("public")).unwrap();
+    let blog = devspace_platform::fs::canonicalize(&blog).unwrap();
+
+    let (child, mut client) = start_daemon(home.path()).await;
+    let _guard = KillOnPanic(child.id());
+    client
+        .request(Request::ProjectAdd {
+            path: blog.clone(),
+            name: None,
+        })
+        .await
+        .unwrap();
+
+    // The DNS server answers for *.internal on the configured port.
+    let socket = tokio::net::UdpSocket::bind(("127.0.0.1", 0)).await.unwrap();
+    let mut query = vec![0x42, 0x42, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+    for label in ["www", "blog", "internal"] {
+        query.push(u8::try_from(label.len()).unwrap());
+        query.extend_from_slice(label.as_bytes());
+    }
+    query.extend_from_slice(&[0, 0, 1, 0, 1]);
+    socket.send_to(&query, ("127.0.0.1", dns)).await.unwrap();
+    let mut response = [0u8; 512];
+    let (len, _) = tokio::time::timeout(TIMEOUT, socket.recv_from(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&response[len - 4..len], &[127, 0, 0, 2]);
+
+    // Status without Caddy installed.
+    let Response::WebStatus(status) = client.request(Request::WebStatus).await.unwrap() else {
+        panic!("expected a web status");
+    };
+    assert!(!status.caddy_installed);
+    assert_eq!(status.server, WebServerState::Stopped);
+    assert_eq!(status.dns, DnsServerState::Listening);
+    assert_eq!(
+        (status.http_port, status.https_port, status.dns_port),
+        (http, https, dns)
+    );
+    assert!(status.certificate_authority.is_none());
+    assert_ne!(
+        status.system.certificate_trust,
+        IntegrationStatus::Installed
+    );
+    assert_eq!(status.sites.len(), 1);
+    assert_eq!(
+        (status.tld.as_str(), status.address.as_str()),
+        ("internal", "127.0.0.2")
+    );
+    assert_eq!(status.sites[0].domain, "blog.internal");
+    assert_eq!(
+        status.sites[0].target,
+        SiteTargetInfo::Static {
+            root: blog.join("public")
+        }
+    );
+
+    // Starting requires the installation, which tests never download.
+    assert_eq!(
+        error_code(client.request(Request::WebStart).await.unwrap()),
+        ErrorCode::Unavailable
+    );
+    stop_daemon(child, client).await;
 }

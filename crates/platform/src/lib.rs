@@ -12,7 +12,11 @@
 //! - [`local_socket`]: user-restricted local IPC transport (Unix domain
 //!   sockets, Windows named pipes) with peer identity checks.
 //! - [`signals`]: signals and console events requesting a graceful shutdown.
-//! - [`process`]: spawning detached background processes.
+//! - [`process`]: spawning detached processes, finding the executable of a
+//!   process, stopping processes.
+//! - [`system`]: machine-wide integrations performed by the privileged
+//!   helper (local DNS resolver, port forwarding, trust store) and elevation.
+//! - [`target`]: operating system and architecture of the build.
 
 pub mod error;
 pub mod fs;
@@ -21,6 +25,8 @@ pub mod paths;
 pub mod privileges;
 pub mod process;
 pub mod signals;
+pub mod system;
+pub mod target;
 
 pub use error::PlatformError;
 pub use paths::AppPaths;

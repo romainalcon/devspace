@@ -1,13 +1,17 @@
 //! `devspace` command-line interface.
 //!
 //! Local commands (`paths`, `config`) work without the daemon; `daemon`
-//! commands manage the daemon lifecycle and `project` commands use the
-//! registry owned by the daemon, both through the IPC protocol.
+//! commands manage the daemon lifecycle, `project` and `web` commands use
+//! the registry and web server owned by the daemon, through the IPC
+//! protocol. `system` commands install the machine-wide integrations
+//! through the privileged helper, after approval.
 
 mod client;
 mod daemon;
 mod error;
 mod project;
+mod system;
+mod web;
 
 use std::process::ExitCode;
 
@@ -19,6 +23,8 @@ use devspace_core::{AppPaths, error::report};
 use crate::daemon::DaemonCommand;
 use crate::error::CliError;
 use crate::project::ProjectCommand;
+use crate::system::SystemCommand;
+use crate::web::WebCommand;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -44,6 +50,14 @@ enum Command {
     /// Manage registered projects (requires the daemon).
     #[command(subcommand)]
     Project(ProjectCommand),
+    /// Manage the web server serving https://<project>.internal (requires the
+    /// daemon).
+    #[command(subcommand)]
+    Web(WebCommand),
+    /// Install or remove the machine-wide integrations (DNS resolver, port
+    /// forwarding, certificate trust) with administrator rights.
+    #[command(subcommand)]
+    System(SystemCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -98,6 +112,8 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
         }
         Command::Daemon(command) => return daemon::execute(command, &paths),
         Command::Project(command) => return project::execute(command, &paths),
+        Command::Web(command) => return web::execute(command, &paths),
+        Command::System(command) => return system::execute(command, &paths),
     }
     Ok(ExitCode::SUCCESS)
 }

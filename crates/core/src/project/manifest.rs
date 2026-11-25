@@ -1,21 +1,26 @@
 //! Per-project manifest, `devspace.toml` at the root of a project.
 //!
-//! The manifest is optional and meant to be committed with the project. In
-//! schema version 1 it only names the project:
+//! The manifest is optional and meant to be committed with the project:
 //!
 //! ```toml
 //! schema_version = 1
 //!
 //! [project]
 //! name = "my-app"   # lowercase letters, digits and hyphens; 1–63 characters
+//!
+//! [web]             # what https://<name>.test serves; at most one of:
+//! root = "public"   # static files of this directory of the project
+//! # proxy = "127.0.0.1:3000"  # or a development server on the loopback
 //! ```
 //!
 //! Every key is optional and unknown keys are rejected. DevSpace only reads
 //! the manifest; it never writes or executes anything from it.
 
+use std::fmt;
 use std::fs::File;
 use std::io::{self, Read as _};
-use std::path::Path;
+use std::net::SocketAddr;
+use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -39,6 +44,8 @@ pub struct Manifest {
     pub schema_version: u32,
     /// `[project]` table.
     pub project: ManifestProject,
+    /// `[web]` table.
+    pub web: ManifestWeb,
 }
 
 impl Default for Manifest {
@@ -46,6 +53,7 @@ impl Default for Manifest {
         Self {
             schema_version: MANIFEST_SCHEMA_VERSION,
             project: ManifestProject::default(),
+            web: ManifestWeb::default(),
         }
     }
 }
@@ -58,14 +66,125 @@ pub struct ManifestProject {
     pub name: Option<ProjectName>,
 }
 
+/// `[web]` table of the manifest: what the local site of the project
+/// serves. `root` and `proxy` are mutually exclusive; without either, the
+/// `public` directory of the project is served if it exists.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ManifestWeb {
+    /// Directory of static files, relative to the project.
+    pub root: Option<WebRoot>,
+    /// Development server receiving the requests.
+    pub proxy: Option<ProxyUpstream>,
+}
+
+/// Directory relative to the project root, without `..` components: the
+/// site never serves files from outside the project.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub struct WebRoot(PathBuf);
+
+impl WebRoot {
+    /// Validates a relative directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description of the broken rule.
+    pub fn parse(text: &str) -> std::result::Result<Self, String> {
+        let path = Path::new(text);
+        if text.is_empty() {
+            return Err("web.root cannot be empty".to_owned());
+        }
+        if !path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+        {
+            return Err(format!(
+                "web.root `{text}` must be a directory inside the project \
+                 (relative, without `..`)"
+            ));
+        }
+        Ok(Self(path.to_path_buf()))
+    }
+
+    /// The relative path.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for WebRoot {
+    type Error = String;
+
+    fn try_from(text: String) -> std::result::Result<Self, String> {
+        Self::parse(&text)
+    }
+}
+
+/// Address of a development server on the loopback interface:
+/// `127.0.0.1:<port>`, `[::1]:<port>` or `localhost:<port>`. Other hosts are
+/// refused so that a local site never relays traffic to the network.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub struct ProxyUpstream(String);
+
+impl ProxyUpstream {
+    /// Validates a loopback address with a port.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description of the broken rule.
+    pub fn parse(text: &str) -> std::result::Result<Self, String> {
+        let invalid = || {
+            format!(
+                "web.proxy `{text}` must be a loopback address with a port, such as \
+                 `127.0.0.1:3000`, `[::1]:3000` or `localhost:3000`"
+            )
+        };
+        let valid = match text.strip_prefix("localhost:") {
+            Some(port) => port.parse::<u16>().is_ok_and(|port| port > 0),
+            None => text
+                .parse::<SocketAddr>()
+                .is_ok_and(|addr| addr.ip().is_loopback() && addr.port() > 0),
+        };
+        if valid {
+            Ok(Self(text.to_owned()))
+        } else {
+            Err(invalid())
+        }
+    }
+
+    /// The address, in the `host:port` form understood by the web server.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for ProxyUpstream {
+    type Error = String;
+
+    fn try_from(text: String) -> std::result::Result<Self, String> {
+        Self::parse(&text)
+    }
+}
+
+impl fmt::Display for ProxyUpstream {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 impl Manifest {
     /// Parses a manifest from TOML text. `origin` is only used in errors.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::ManifestParse`] for invalid TOML, an invalid project
-    /// name or an unknown key, and [`Error::UnsupportedManifestVersion`] for
-    /// an unknown `schema_version`.
+    /// Returns [`Error::ManifestParse`] for invalid TOML, an invalid value
+    /// or an unknown key, [`Error::UnsupportedManifestVersion`] for an
+    /// unknown `schema_version`, and [`Error::InvalidManifest`] for
+    /// conflicting settings.
     pub fn from_toml(text: &str, origin: &Path) -> Result<Self> {
         let manifest: Self = toml::from_str(text).map_err(|source| Error::ManifestParse {
             path: origin.to_path_buf(),
@@ -76,6 +195,12 @@ impl Manifest {
                 path: origin.to_path_buf(),
                 found: manifest.schema_version,
                 supported: MANIFEST_SCHEMA_VERSION,
+            });
+        }
+        if manifest.web.root.is_some() && manifest.web.proxy.is_some() {
+            return Err(Error::InvalidManifest {
+                path: origin.to_path_buf(),
+                reason: "web.root and web.proxy cannot both be set",
             });
         }
         Ok(manifest)
@@ -150,6 +275,48 @@ mod tests {
         assert!(matches!(err, Error::ManifestParse { .. }));
         let err = Manifest::from_toml("[scripts]\nstart = \"rm -rf /\"\n", origin()).unwrap_err();
         assert!(matches!(err, Error::ManifestParse { .. }));
+    }
+
+    #[test]
+    fn web_settings_are_validated() {
+        let manifest = Manifest::from_toml("[web]\nroot = \"dist/site\"\n", origin()).unwrap();
+        assert_eq!(manifest.web.root.unwrap().as_path(), Path::new("dist/site"));
+        for proxy in [
+            "127.0.0.1:3000",
+            "[::1]:5173",
+            "localhost:8000",
+            "127.0.0.2:1",
+        ] {
+            let text = format!("[web]\nproxy = \"{proxy}\"\n");
+            let manifest = Manifest::from_toml(&text, origin()).unwrap();
+            assert_eq!(manifest.web.proxy.unwrap().as_str(), proxy);
+        }
+        for invalid in [
+            "root = \"\"",
+            "root = \"../other\"",
+            "root = \"public/../../x\"",
+            "root = \"/var/www\"",
+            "proxy = \"192.168.1.10:80\"",
+            "proxy = \"example.com:80\"",
+            "proxy = \"127.0.0.1\"",
+            "proxy = \"localhost:0\"",
+            "proxy = \"localhost:http\"",
+            "index = \"index.php\"",
+        ] {
+            let text = format!("[web]\n{invalid}\n");
+            assert!(
+                matches!(
+                    Manifest::from_toml(&text, origin()),
+                    Err(Error::ManifestParse { .. })
+                ),
+                "{invalid}"
+            );
+        }
+        let both = "[web]\nroot = \"public\"\nproxy = \"127.0.0.1:3000\"\n";
+        assert!(matches!(
+            Manifest::from_toml(both, origin()),
+            Err(Error::InvalidManifest { .. })
+        ));
     }
 
     #[test]

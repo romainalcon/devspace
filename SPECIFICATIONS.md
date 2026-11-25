@@ -15,7 +15,8 @@ binaries and **without requiring Docker**.
   installs and runs exactly that.
 - Project-level orchestration: start/stop a project with its web server,
   services and processes.
-- Local domains (`*.test`) served by Caddy with locally trusted HTTPS.
+- Local domains (`*.internal` by default, configurable) served by Caddy with
+  locally trusted HTTPS, coexisting with other local tools.
 - Same feature set on macOS, Windows and Linux; macOS ARM64 is validated first.
 - Two front-ends of equal standing, the CLI and the desktop application,
   both driving the same daemon.
@@ -30,7 +31,8 @@ binaries and **without requiring Docker**.
 ## Functional requirements
 
 Requirements are tagged with the milestone delivering them. M0, M1 and M2
-items are implemented today.
+items are implemented today; M3 items are implemented and awaiting
+validation.
 
 ### Implemented (M0)
 
@@ -71,11 +73,25 @@ items are implemented today.
 | F-2.6 | Registering or removing a project never creates, modifies or deletes files in the project directory. |
 | F-2.7 | `project` commands require the daemon; when it is not running they fail with a hint to run `devspace daemon start`. |
 
+### Implemented (M3, awaiting validation)
+
+| ID | Requirement |
+|---|---|
+| F-3.1 | `devspace web install` downloads Caddy v2.11.9 for the current platform over HTTPS, verifies its SHA-256 against the checksum embedded in DevSpace, extracts only the executable and installs it in `<data>/tools/caddy/2.11.9/`. A mismatching download is discarded. |
+| F-3.2 | The daemon runs Caddy as the current user, listening only on `web.address` (IPv4 loopback, `127.0.0.2` by default) on `web.http_port` and `web.https_port`. It starts with the daemon when installed, restarts when a project is added or removed, and stops with the daemon. `devspace web start|stop|restart` control it; `restart` re-reads the project manifests. |
+| F-3.3 | Every registered project is served at `https://<name>.<tld>` and `https://*.<name>.<tld>` (`web.tld`, `internal` by default): static files of `[web] root` (default `public/`, which must exist), or the loopback development server of `[web] proxy`. Roots resolving outside the project are refused, and so are roots holding an `index.php` without `index.html` (PHP runtimes come with M4). Unserved projects are reported with the reason by `web status` and answer HTTP 503 with that reason; error responses carry a short text instead of an empty page. HTTP requests are redirected to HTTPS on the standard port. |
+| F-3.4 | Certificates are issued by a local certificate authority created in `<data>/caddy/storage`; Caddy never installs its trust itself. |
+| F-3.5 | The daemon answers DNS queries for `*.<tld>` on `127.0.0.1:web.dns_port` (UDP) with `web.address` (no IPv6 answer), and refuses other names. |
+| F-3.6 | `devspace web status` prints the web server, DNS server, CA fingerprint, system integrations (and whether port 80 really reaches the web server) and every site. |
+| F-3.7 | `devspace system setup` lists the missing integrations (resolver for `*.<tld>`, the sites address on the loopback interface with the forwarding of its ports 80/443, trust of the local CA with its fingerprint), asks for confirmation (`--yes` to skip), then runs `devspace-helper` through `sudo` for each one. If the CA does not exist yet, the web server is started after the first changes and the trust is approved separately. Starting the web server before its address exists fails with a hint to run `system setup`. `devspace system teardown` removes what DevSpace installed. Implemented on macOS. |
+| F-3.8 | System files that exist without the DevSpace marker are never modified or removed; `system setup` then stops before any change and explains the conflict. |
+| F-3.9 | Web and system commands require the daemon (F-2.7). Starting the web server before installing it fails with a hint to run `devspace web install`. |
+
 ### Planned
 
 | ID | Milestone | Requirement |
 |---|---|---|
-| F-3 | M3 | Caddy-based reverse proxy with `*.test` domains and a locally trusted CA, configured through an isolated privileged helper after explicit approval. |
+| F-3.10 | M3+ | System integrations on Linux and Windows. |
 | F-4 | M4 | Runtime package manager: download, verify checksums and signatures, extract safely (no path traversal), switch versions. |
 | F-5 | M5 | Services (MySQL/MariaDB, PostgreSQL, Redis, …) supervised by the daemon. |
 | F-6 | M6 | Desktop application on top of the IPC API. |
@@ -88,10 +104,22 @@ schema_version = 1        # required to equal 1 if present
 [logging]
 level = "info"            # error | warn | info | debug | trace
 format = "compact"        # compact | pretty
+
+[web]
+tld = "internal"          # sites at https://<project>.internal; not local/localhost
+address = "127.0.0.2"     # loopback address of the sites (127.0.0.0/8)
+http_port = 47080         # web server on that address, at least 1024
+https_port = 47443        # must differ from http_port
+dns_port = 47053          # DNS server on 127.0.0.1 for *.<tld> (UDP), at least 1024
 ```
 
 Rules: all keys optional, unknown keys rejected, file never overwritten by
-DevSpace.
+DevSpace. Changing a `web` setting requires restarting the daemon, then
+running `devspace system setup` again (the resolver or forwarding becomes
+`outdated` or `missing`); run `devspace system teardown` *before* changing
+`tld` or `address`, so that the old resolver file and alias are removed.
+The defaults do not collide with Laravel Herd or Valet (`*.test` on
+`127.0.0.1`).
 
 ## Project manifest reference (schema version 1)
 
@@ -102,16 +130,21 @@ schema_version = 1        # required to equal 1 if present
 
 [project]
 name = "my-app"           # optional; see project names below
+
+[web]                     # optional; at most one of root and proxy
+root = "public"           # static files; relative, no `..`; default "public"
+proxy = "127.0.0.1:3000"  # or a development server: 127.0.0.1, [::1] or localhost
 ```
 
 Rules: all keys optional, unknown keys rejected, file only read by DevSpace
-(never written, nothing in it is executed).
+(never written, nothing in it is executed). `project.name` is read when
+the project is added; `[web]` whenever the web server (re)starts.
 
 Project names: 1–63 characters among lowercase ASCII letters, digits and
-`-`, not starting or ending with `-` (a DNS label, for the `*.test`
+`-`, not starting or ending with `-` (a DNS label, for the `*.<tld>`
 domains of M3).
 
-## IPC protocol reference (version 2)
+## IPC protocol reference (version 3)
 
 Frames: 4-byte big-endian payload length, then a UTF-8 JSON object; payloads
 over 1 MiB are rejected. Every message carries a `type` tag.
@@ -132,13 +165,46 @@ over 1 MiB are rejected. Every message carries a `type` tag.
 | `project_add` with `path` (absolute), optional `name` | `project_added` with `name`, `path`, `added_at` |
 | `project_list` | `projects` with `projects: [{name, path, added_at}]` sorted by name |
 | `project_remove` with `name` | `project_removed` with `name`, `path`, `added_at` |
+| `web_install`, `web_start`, `web_stop`, `web_restart`, `web_status` | `web_status` (below) |
+
+`web_status` fields: `caddy_version`, `caddy_installed`, `tld`,
+`address`, `server`
+(`{state: stopped|starting|failed, message?}` or `{state: running, pid}`),
+`http_port`, `https_port`, `dns_port`, `dns` (`{state: listening}` or
+`{state: failed, message}`), `certificate_authority` (`null` or
+`{certificate_pem, sha256}`), `system` (`resolver`, `port_forwarding`,
+`certificate_trust`: `installed|missing|outdated|conflict|unsupported|unknown`;
+`forwarding_active`: boolean or `null`), `sites` (`[{project, domain,
+target}]` with `target` `{type: static, root}`, `{type: proxy, upstream}` or
+`{type: unavailable, reason}`).
 
 Any request may instead be answered with `error`: `code` (`invalid_request`,
-`already_exists`, `not_found`, `internal`) and a human-readable `message`;
-the connection stays open. `added_at` is in seconds since the Unix epoch.
+`already_exists`, `not_found`, `unavailable`, `failed`, `internal`) and a
+human-readable `message`; the connection stays open. `added_at` is in
+seconds since the Unix epoch. `web_install` may take minutes; clients use a
+longer timeout for it.
 
 Version history: 1 (M1) `ping`, `status`, `shutdown`; 2 (M2) project
-requests and `error` responses.
+requests and `error` responses; 3 (M3) web requests, `unavailable` and
+`failed` codes.
+
+## Privileged helper reference
+
+`devspace-helper` is installed next to `devspace`, run through `sudo`, and
+performs one operation per run:
+
+| Operation | Effect (macOS) |
+|---|---|
+| `install-resolver --tld T --port P` | writes `/etc/resolver/T` (`nameserver 127.0.0.1`, `port P`) |
+| `remove-resolver --tld T` | deletes it |
+| `install-port-forwarding --address A --http-port H --https-port S` | adds `A` to `lo0` unless it is `127.0.0.1`, writes `/etc/pf.anchors/devspace` (rdr on `lo0` for `A` only: 80→H, 443→S) and a launch daemon restoring the alias and rules at boot, loads the anchor `com.apple/devspace` and enables pf; `/etc/pf.conf` and other addresses are untouched |
+| `remove-port-forwarding --address A` | flushes the anchor, deletes both files, removes the alias `A` (never `127.0.0.1`; pf stays enabled) |
+| `trust-certificate --sha256 F` | reads a PEM certificate on stdin, checks its SHA-256 is `F`, adds it to the System keychain as a trusted SSL root |
+| `untrust-certificate --sha256 F` | same check, removes the trust setting and the certificate |
+
+Exit status: `0` success, `1` failure, `2` invalid command line. The helper
+refuses to run without administrator rights and never modifies a file that
+lacks the "Managed by DevSpace" marker.
 
 Rules: `hello` must come first and within 5 s; unknown or malformed messages
 close the connection; the handshake messages never change shape and any
@@ -157,8 +223,13 @@ No platform-specific command or path may be assumed outside
 
 - No main process (daemon, CLI, desktop) runs as root/administrator; this is
   enforced at startup (M0).
-- Privileged operations are isolated in a minimal helper and require explicit
-  user approval.
+- Privileged operations are isolated in a minimal, one-shot helper and
+  require explicit user approval (confirmation, then `sudo`) (M3).
+- The web, DNS and Caddy admin surfaces are never exposed beyond the
+  loopback interface; Caddy's admin API is disabled (M3).
+- The local CA key is readable by the current user only; as with any local
+  development CA, code running as this user could issue trusted
+  certificates (M3).
 - IPC clients are authenticated with OS-level permissions and peer identity
   (M1); the daemon is also authenticated by its clients.
 - Downloaded packages are verified (checksum and signature) before use;

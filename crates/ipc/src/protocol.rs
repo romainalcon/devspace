@@ -17,14 +17,16 @@
 //! - peers only talk when their versions are equal.
 //!
 //! History: version 1 (M1) had `ping`, `status` and `shutdown`; version 2
-//! (M2) adds the project registry and the `error` response.
+//! (M2) adds the project registry and the `error` response; version 3 (M3)
+//! adds the web server requests and the `unavailable` and `failed` error
+//! codes.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 /// Version of the protocol implemented by this build.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Name and version of a program taking part in a connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +123,20 @@ pub enum Request {
         /// Name of the project.
         name: String,
     },
+    /// Downloads and installs the pinned Caddy release if needed, answered
+    /// by [`Response::WebStatus`]. May take minutes.
+    WebInstall,
+    /// Starts the web server if it is not running, answered by
+    /// [`Response::WebStatus`].
+    WebStart,
+    /// Stops the web server, answered by [`Response::WebStatus`].
+    WebStop,
+    /// Restarts the web server with a configuration regenerated from the
+    /// projects and their manifests, answered by [`Response::WebStatus`].
+    WebRestart,
+    /// State of the web server, DNS server, local CA and system
+    /// integrations, answered by [`Response::WebStatus`].
+    WebStatus,
 }
 
 /// Answers of the daemon.
@@ -142,6 +158,8 @@ pub enum Response {
     },
     /// Answer to [`Request::ProjectRemove`]: the removed project.
     ProjectRemoved(ProjectInfo),
+    /// Answer to the web requests: the state after the request.
+    WebStatus(Box<WebStatus>),
     /// The request was understood but failed.
     Error(ErrorResponse),
 }
@@ -176,8 +194,151 @@ pub enum ErrorCode {
     AlreadyExists,
     /// The resource does not exist.
     NotFound,
+    /// The request cannot be performed in the current state (e.g. the web
+    /// server is not installed, or the platform does not support it).
+    Unavailable,
+    /// An external operation failed (download, web server start, …).
+    Failed,
     /// The daemon failed to process a valid request.
     Internal,
+}
+
+/// State of the web server and of everything making the local sites
+/// reachable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebStatus {
+    /// Pinned Caddy version.
+    pub caddy_version: String,
+    /// Whether that version is installed.
+    pub caddy_installed: bool,
+    /// Web server process.
+    pub server: WebServerState,
+    /// Top-level domain of the sites.
+    pub tld: String,
+    /// Loopback address of the sites.
+    pub address: String,
+    /// HTTP port of the web server on that address.
+    pub http_port: u16,
+    /// HTTPS port of the web server on that address.
+    pub https_port: u16,
+    /// UDP port of the DNS server on `127.0.0.1`.
+    pub dns_port: u16,
+    /// DNS server.
+    pub dns: DnsServerState,
+    /// Local certificate authority, once the web server created it.
+    pub certificate_authority: Option<CertificateAuthorityInfo>,
+    /// Machine-wide integrations installed by the privileged helper.
+    pub system: SystemIntegrations,
+    /// Site of every registered project, sorted by project name.
+    pub sites: Vec<SiteInfo>,
+}
+
+/// State of the web server process.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum WebServerState {
+    /// Not running.
+    Stopped,
+    /// Started, not accepting connections yet.
+    Starting,
+    /// Running and accepting connections.
+    Running {
+        /// Process id of the web server.
+        pid: u32,
+    },
+    /// Stopped after a failure.
+    Failed {
+        /// What happened.
+        message: String,
+    },
+}
+
+/// State of the DNS server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum DnsServerState {
+    /// Answering queries.
+    Listening,
+    /// Could not start.
+    Failed {
+        /// What happened.
+        message: String,
+    },
+}
+
+/// Root certificate of the local certificate authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CertificateAuthorityInfo {
+    /// Certificate in PEM form.
+    pub certificate_pem: String,
+    /// SHA-256 fingerprint, 64 uppercase hexadecimal digits.
+    pub sha256: String,
+}
+
+/// Machine-wide integrations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SystemIntegrations {
+    /// Resolution of `*.<tld>` by the DNS server.
+    pub resolver: IntegrationStatus,
+    /// Loopback address of the sites and forwarding of its ports 80 and
+    /// 443 to the web server.
+    pub port_forwarding: IntegrationStatus,
+    /// Trust of the local certificate authority.
+    pub certificate_trust: IntegrationStatus,
+    /// Whether port 80 of the sites address currently reaches the DevSpace
+    /// web server; `None` when the web server is not running.
+    pub forwarding_active: Option<bool>,
+}
+
+/// State of one integration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntegrationStatus {
+    /// Installed with the current settings.
+    Installed,
+    /// Not installed.
+    Missing,
+    /// Installed with other settings; setting it up again updates it.
+    Outdated,
+    /// The location is used by something else, which DevSpace never
+    /// modifies.
+    Conflict,
+    /// Not available on this platform yet.
+    Unsupported,
+    /// Could not be determined (see the daemon logs).
+    Unknown,
+}
+
+/// Local site of a project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteInfo {
+    /// Project name.
+    pub project: String,
+    /// Domain, `<project>.<tld>`.
+    pub domain: String,
+    /// What the site serves.
+    pub target: SiteTargetInfo,
+}
+
+/// Content of a site.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SiteTargetInfo {
+    /// Static files.
+    Static {
+        /// Directory served.
+        root: PathBuf,
+    },
+    /// Development server.
+    Proxy {
+        /// Loopback address of the server.
+        upstream: String,
+    },
+    /// Not served.
+    Unavailable {
+        /// Explanation.
+        reason: String,
+    },
 }
 
 /// State of the running daemon.
@@ -335,6 +496,88 @@ mod tests {
             &json!({"kind": "error", "code": "not_found",
                     "message": "no project named `x` is registered"}),
         );
+    }
+
+    #[test]
+    fn web_wire_format() {
+        for (request, method) in [
+            (Request::WebInstall, "web_install"),
+            (Request::WebStart, "web_start"),
+            (Request::WebStop, "web_stop"),
+            (Request::WebRestart, "web_restart"),
+            (Request::WebStatus, "web_status"),
+        ] {
+            assert_wire(&request, &json!({"method": method}));
+        }
+        let status = WebStatus {
+            caddy_version: "2.11.9".into(),
+            caddy_installed: true,
+            server: WebServerState::Running { pid: 7 },
+            tld: "internal".into(),
+            address: "127.0.0.2".into(),
+            http_port: 47080,
+            https_port: 47443,
+            dns_port: 47053,
+            dns: DnsServerState::Failed {
+                message: "port in use".into(),
+            },
+            certificate_authority: Some(CertificateAuthorityInfo {
+                certificate_pem: "PEM".into(),
+                sha256: "AB".into(),
+            }),
+            system: SystemIntegrations {
+                resolver: IntegrationStatus::Installed,
+                port_forwarding: IntegrationStatus::Conflict,
+                certificate_trust: IntegrationStatus::Unsupported,
+                forwarding_active: None,
+            },
+            sites: vec![
+                SiteInfo {
+                    project: "blog".into(),
+                    domain: "blog.test".into(),
+                    target: SiteTargetInfo::Static {
+                        root: PathBuf::from("/src/blog/public"),
+                    },
+                },
+                SiteInfo {
+                    project: "api".into(),
+                    domain: "api.test".into(),
+                    target: SiteTargetInfo::Proxy {
+                        upstream: "127.0.0.1:3000".into(),
+                    },
+                },
+            ],
+        };
+        assert_wire(
+            &Response::WebStatus(Box::new(status)),
+            &json!({
+                "kind": "web_status",
+                "caddy_version": "2.11.9",
+                "caddy_installed": true,
+                "server": {"state": "running", "pid": 7},
+                "tld": "internal",
+                "address": "127.0.0.2",
+                "http_port": 47080,
+                "https_port": 47443,
+                "dns_port": 47053,
+                "dns": {"state": "failed", "message": "port in use"},
+                "certificate_authority": {"certificate_pem": "PEM", "sha256": "AB"},
+                "system": {
+                    "resolver": "installed",
+                    "port_forwarding": "conflict",
+                    "certificate_trust": "unsupported",
+                    "forwarding_active": null,
+                },
+                "sites": [
+                    {"project": "blog", "domain": "blog.test",
+                     "target": {"type": "static", "root": "/src/blog/public"}},
+                    {"project": "api", "domain": "api.test",
+                     "target": {"type": "proxy", "upstream": "127.0.0.1:3000"}},
+                ],
+            }),
+        );
+        assert_wire(&ErrorCode::Unavailable, &json!("unavailable"));
+        assert_wire(&ErrorCode::Failed, &json!("failed"));
     }
 
     #[test]

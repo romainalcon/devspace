@@ -24,23 +24,28 @@ that keep it maintainable. Any change to these rules must be documented here
                          ┌─────────────────────┐
                          │  devspace-platform  │  OS-specific code
                          └─────────────────────┘
+
+   devspaced ──spawns──▶ Caddy (user, loopback only)
+   devspace system setup ──sudo──▶ devspace-helper (one operation, exits)
 ```
 
-Status in M2: the daemon serves the IPC protocol and owns the SQLite
-database; the CLI uses IPC for the daemon lifecycle
-(`devspace daemon start|stop|status`) and the project registry
-(`devspace project …`), and uses `devspace-core` directly for local,
-daemon-independent commands (configuration, paths). The desktop application
-is not connected yet (M6).
+Status in M3: the daemon serves the IPC protocol, owns the SQLite
+database, runs the DNS server and supervises Caddy; the CLI uses IPC for
+the daemon lifecycle, the project registry (`devspace project …`) and the
+web server (`devspace web …`), uses `devspace-core` directly for local,
+daemon-independent commands (configuration, paths), and starts the
+privileged helper through `sudo` for `devspace system setup|teardown`. The
+desktop application is not connected yet (M6).
 
 ## Crates
 
 | Crate | Path | Kind | Responsibility |
 |---|---|---|---|
-| `devspace-platform` | `crates/platform` | lib | **Only** place for platform-specific code: directory conventions, privilege detection, local sockets / named pipes and peer identity, shutdown signals, detached processes, path canonicalisation; later service registration, trust stores. Exposes portable APIs. |
-| `devspace-core` | `crates/core` | lib | Business logic: typed configuration, errors, logging setup, single-instance lock, SQLite storage and migrations, project registry and manifest; later runtimes, services. No Tauri, no UI, no transport. |
+| `devspace-platform` | `crates/platform` | lib | **Only** place for platform-specific code: directory conventions, build target, privilege detection, local sockets / named pipes and peer identity, shutdown signals, processes (detach, executable of a pid, stop), path canonicalisation and atomic writes, system integrations (resolver, port forwarding, trust store) and elevation; later service registration. Exposes portable APIs. |
+| `devspace-core` | `crates/core` | lib | Business logic: typed configuration, errors, logging setup, single-instance lock, SQLite storage and migrations, project registry and manifest, web server (pinned Caddy release, archive extraction, sites, Caddy configuration, local CA, DNS answers); later runtimes, services. No Tauri, no UI, no transport. |
+| `devspace-helper` | `crates/helper` | lib + bin `devspace-helper` | Privileged helper (bin) and what its callers share with it (lib): typed operations and their command-line encoding, PEM certificates and fingerprints, the local TLD. The lib has no OS code. |
 | `devspace-ipc` | `crates/ipc` | lib | Protocol between daemon and clients: messages, framing, versioning, handshake, typed client and server connections. Re-exports the transport of `devspace-platform`. |
-| `devspace-daemon` | `crates/daemon` | bin `devspaced` | Long-running process owning projects, services and processes. M2: IPC server, lifecycle, database owner, project requests. |
+| `devspace-daemon` | `crates/daemon` | bin `devspaced` | Long-running process owning projects, services and processes. M3: IPC server, lifecycle, database owner, project requests, DNS server, Caddy supervision. |
 | `devspace-cli` | `crates/cli` | bin `devspace` | Command-line client. |
 | `devspace-desktop` | `apps/desktop/src-tauri` | bin + lib | Tauri 2 shell with a Vue 3 / TypeScript frontend. Starter template in M0. |
 
@@ -49,10 +54,15 @@ is not connected yet (M6).
 ```
 platform  ←  core  ←  daemon, cli
 platform  ←  ipc   ←  daemon, cli, desktop
-platform  ←  daemon, cli            (signals, detached processes)
+platform  ←  daemon, cli            (signals, processes, system integrations)
+platform  ←  helper (bin)
+helper (lib)  ←  core, cli
 ```
 
 - `core` and `platform` must never depend on `tauri`, `ipc`, or a binary crate.
+- The helper binary depends only on `platform` and its own lib, so that
+  the privileged code stays small and auditable; it never depends on
+  `core` (no database, network or archive code runs privileged).
 - `ipc` depends only on `platform` (transport), never on `core`.
 - `desktop` must never depend on `core`: all business operations go through
   the daemon via `ipc`.
@@ -125,9 +135,32 @@ Resolved by `devspace_platform::AppPaths`:
 - `devspace_core::ensure_unprivileged()` is the first call of every entry
   point; it refuses to run when root (Unix, `euid == 0`) or elevated
   (Windows, token elevation).
-- Operations that genuinely need privileges (binding ports < 1024, editing
-  trust stores, `/etc/hosts` / resolver files) will be isolated in a separate,
-  minimal helper with explicit user approval (milestone M3).
+- Operations that genuinely need privileges are isolated in
+  `devspace-helper`, the only program meant to run elevated (it refuses to
+  run otherwise). It is one-shot: `devspace system setup|teardown` shows
+  the plan, asks for confirmation, then runs `sudo devspace-helper
+  <operation>` once per change. There is no privileged service.
+- Operations are a closed, typed set (`devspace_helper::Operation`) with a
+  strict command-line encoding; the only input on stdin is a PEM
+  certificate whose SHA-256 must equal the fingerprint on the command line
+  (the one the user approved). The helper copies it into a directory only
+  root can access before use.
+- Every system file written by DevSpace contains the marker "Managed by
+  DevSpace"; files without it are never modified or removed, and the plan
+  aborts before any change when one is in the way. System tools are run by
+  absolute path with a cleared environment.
+- Ports 80/443 are not bound by DevSpace: the web server listens on
+  unprivileged ports of the sites address and the helper installs a port
+  forwarding for that address only (macOS: `lo0` alias for addresses other
+  than `127.0.0.1`, `pf` rdr rules in the anchor `com.apple/devspace`, both
+  restored at boot by a launch daemon, without editing `/etc/pf.conf`).
+- The TLD and address are validated types (`devspace_helper::Tld`,
+  `LoopbackAddress`) shared by the configuration, the CLI and the helper;
+  the platform layer validates them again before building paths or
+  commands.
+- In installed layouts the helper must be root-owned (M7); in development it
+  is run from `target/`, which is acceptable only because the user
+  approves every invocation with their own password.
 
 ### IPC
 
@@ -188,6 +221,42 @@ handshake messages never change shape; any other change increments
 - Core errors are mapped to IPC `ErrorCode`s in the daemon
   (`handlers::error_response`); the message is the full error chain.
 
+### Web server and local domains
+
+- `devspace_core::web::WebLayout` places everything under the DevSpace
+  directories: Caddy in `<data>/tools/caddy/<version>/`, its configuration
+  and storage (CA, certificates) in `<data>/caddy/`, a contained
+  `HOME`/XDG directory in `<data>/caddy/home`, its output in
+  `<logs>/caddy.log`, its pid in `<run>/caddy.pid`, downloads in
+  `<cache>/downloads`.
+- Installation (`web::release`): one pinned version with SHA-256 checksums
+  per platform embedded in the source; HTTPS-only download (`ureq`,
+  rustls) with size and time limits; checksum verified before extraction;
+  `web::archive` copies only the named entry of the archive root into a file
+  chosen by DevSpace (no path from the archive is ever used); `caddy version`
+  is checked; the executable appears atomically.
+- Configuration (`web::caddy_config`): generated JSON, admin API disabled
+  and never persisted, servers on `web.address` only (an IPv4 loopback
+  address, `127.0.0.2` by default), one route per site (`<name>.<tld>`,
+  `*.<name>.<tld>`), certificates from the internal CA
+  with `install_trust: false`, HTTP redirects carrying an `X-DevSpace`
+  header used to probe the forwarding.
+- Sites (`web::site`): targets read from the manifest each time the
+  configuration is generated; static roots canonicalised and confined to
+  the project; proxies restricted to loopback addresses.
+- Supervision (`devspaced::web`): Caddy runs in its own session; the daemon
+  checks the ports are free, waits until Caddy holds the HTTPS port (15 s;
+  checked by a failing bind, because with the `pf` redirection active,
+  direct connections to the redirection target ports stall on macOS),
+  and a monitor task records unexpected exits. Changes restart Caddy.
+  `SIGTERM` then kill after 5 s. At startup, a pid file designating a
+  process that still runs the DevSpace Caddy executable is stopped (daemon
+  crash recovery).
+- DNS (`web::dns` + `devspaced::dns`): UDP on `127.0.0.1:<dns_port>`,
+  authoritative for `<tld>.` only, `A` answers with the sites address (no
+  `AAAA`), `REFUSED` elsewhere, no recursion; malformed input never panics (exhaustive
+  truncation tests).
+
 ### Daemon lifecycle
 
 1. `ensure_unprivileged`, resolve and create directories, load
@@ -195,13 +264,15 @@ handshake messages never change shape; any other change increments
 2. Take the single-instance lock `<run>/devspaced.lock`
    (`devspace_core::instance::InstanceLock`, `File::try_lock`). The OS
    releases it when the process dies, so a crash never blocks a restart.
-   Then open and migrate the database.
+   Then open and migrate the database, and stop a Caddy left by a crashed
+   daemon.
 3. Build the multi-threaded Tokio runtime, bind the endpoint, install
-   signal handlers, accept connections (one task per connection).
+   signal handlers, start the DNS server and (in the background, when
+   installed) Caddy, accept connections (one task per connection).
 4. On `Shutdown` request or signal (`SIGINT`, `SIGTERM`, `SIGHUP`; Windows
    Ctrl+C/Break, close, logoff, shutdown): drop the listener (endpoint
-   removed), notify connections, wait up to 5 s, abort the rest, drop the
-   runtime (which closes the database), release the lock.
+   removed), notify connections, wait up to 5 s, abort the rest, stop
+   Caddy, drop the runtime (which closes the database), release the lock.
 
 `devspace daemon start` spawns `devspaced --background` from the directory of
 the `devspace` executable, detached (`setsid` on Unix, `DETACHED_PROCESS` on
@@ -212,8 +283,9 @@ and waits up to 10 s for the lock to be released.
 ### Unsafe code
 
 `unsafe_code` is denied workspace-wide. It is allowed locally only in
-`devspace-platform` for FFI calls (`geteuid`, `setsid`, Win32 token, pipe and
-security descriptor APIs), each block having a `SAFETY:` comment.
+`devspace-platform` for FFI calls (`geteuid`, `setsid`, `kill`,
+`proc_pidpath`, Win32 token, process, pipe and security descriptor APIs),
+each block having a `SAFETY:` comment.
 
 ## Tooling
 
@@ -250,3 +322,15 @@ security descriptor APIs), each block having a `SAFETY:` comment.
 | 18 | 2026-11-25 | The daemon reads the project manifest, not the CLI. | The daemon is the source of truth; the desktop app will only send a path. |
 | 19 | 2026-11-25 | Project names are DNS labels; directory names are normalised, explicit names are only validated. | Names become `<name>.test` domains in M3; deriving a name must not fail on common directory names, but an explicit choice is never altered silently. |
 | 20 | 2026-11-25 | Project paths stored canonical and as UTF-8 text; non-UTF-8 paths refused. | One entry per directory whatever the path used; JSON (IPC) and SQLite text require Unicode. |
+| 21 | 2026-11-25 | Caddy is a pinned download (v2.11.9) with embedded SHA-256 checksums, ahead of the M4 package manager. | Approved by the user; a hash reviewed at pin time is a stronger anchor than a signature fetched at run time. Cosign signatures were not verified at pin time (cosign unavailable); the checksums were cross-checked with the published SHA-512 file. |
+| 22 | 2026-11-25 | `ureq` (sync, rustls) for downloads, called from `spawn_blocking`; `tar` + `flate2` and `zip` (inflate only) for archives. | Small dependencies, no async client needed in `core`; same model as the database. |
+| 23 | 2026-11-25 | Caddy admin API disabled; configuration applied by restarting Caddy. | The admin API is an unauthenticated TCP endpoint reachable by every local user; a restart takes well under a second for a development server. |
+| 24 | 2026-11-25 | Embedded DNS server + per-TLD resolver file instead of `/etc/hosts`. | Approved by the user: wildcard subdomains, one privileged change for all projects. |
+| 25 | 2026-11-25 | One-shot helper through `sudo`, no privileged service. | Approved by the user: no permanent root process or IPC surface; every change is approved and authenticated. |
+| 26 | 2026-11-25 | Ports 80/443 reach Caddy through `pf` forwarding; Caddy listens on 47080/47443. | macOS refuses unprivileged binds of low ports on loopback addresses (only the wildcard address, which would expose the sites); approved by the user over visible high ports or launchd sockets. |
+| 27 | 2026-11-25 | The helper lib is shared by `core` and `cli`; the helper bin does not depend on `core`. | One definition of operations and certificate handling; minimal privileged dependency tree. |
+| 28 | 2026-11-25 | Static sites serve `[web] root` (default `public/`), never the project root by default. | Avoids exposing `.env` and sources; approved by the user. |
+| 29 | 2026-11-25 | Orphan Caddy detection by pid file + executable path check. | A crashed daemon leaves Caddy holding the ports; checking the executable avoids signalling a reused pid. |
+| 30 | 2026-11-25 | Configurable `web.tld` and `web.address`, defaulting to `internal` and `127.0.0.2`. | Approved by the user: coexistence with Herd/Valet, which use `*.test` and the ports of `127.0.0.1`; `pf` cannot route by host name, so a distinct address is required. `.internal` is reserved by ICANN for private use; `local` and `localhost` are refused. |
+| 31 | 2026-11-25 | Sites served over IPv4 only (no `AAAA`, no `[::1]` listener). | IPv6 loopback has a single address, which cannot be dedicated to DevSpace; clients fall back to the `A` record. |
+| 32 | 2026-11-25 | Unserved sites keep a route and a certificate and answer 503 with the reason; PHP front controllers are not served statically. | A blank page or a TLS failure in the browser does not explain anything; serving `index.php` as a file would be wrong. |

@@ -50,7 +50,7 @@ Legend: ✅ done · 🔄 in progress · ⏳ planned
 - ⏳ Execution on Windows and Linux (CI, once a remote exists). The Windows
   named-pipe ACL and peer checks have only been compiled, never run.
 
-## M2 — Project registry 🔄 (awaiting validation)
+## M2 — Project registry ✅
 
 - ✅ SQLite storage (`rusqlite`, bundled SQLite) in `<data>/devspace.db`,
   opened only by the daemon after it takes the instance lock; WAL journal.
@@ -71,13 +71,70 @@ Legend: ✅ done · 🔄 in progress · ⏳ planned
 - ⚠️ Cross-target `clippy` from macOS now covers `platform` and `ipc` only:
   the bundled SQLite needs a C toolchain for the target, so `core`,
   `daemon` and `cli` are only checked on their native CI runners.
+- ✅ Validated; M3 started on 2026-11-25.
 - ⏳ Execution on Windows and Linux (CI, once a remote exists).
 
-## M3 — Web server, domains & privileged helper ⏳
+## M3 — Web server, domains & privileged helper 🔄 (awaiting validation)
 
-- Caddy managed by the daemon, `*.test` domains, local CA.
-- Minimal privileged helper for resolver/hosts and trust store changes,
-  requiring explicit approval.
+Design choices approved on 2026-11-25: pinned Caddy download, embedded DNS
+server plus resolver file, one-shot helper through `sudo`, static files or
+loopback proxy per project, `pf` forwarding of ports 80/443; then (same day)
+configurable domain and address, `*.internal` on `127.0.0.2` by default, to
+coexist with Laravel Herd (`*.test` on `127.0.0.1`).
+
+- ✅ Pinned Caddy v2.11.9 downloaded by the daemon over HTTPS only, verified
+  against embedded SHA-256 checksums (cross-checked with the release's
+  SHA-512 file), extracted without path traversal, version-checked,
+  installed atomically (`devspace web install`).
+- ✅ Caddy supervised by the daemon as the current user: generated JSON
+  configuration, admin API disabled, loopback-only listeners on
+  unprivileged ports (47080/47443 by default), automatic start with the
+  daemon, restart on project changes, graceful stop, failure reporting,
+  orphan cleanup after a daemon crash (pid file + executable check).
+- ✅ `web.tld` (default `internal`) and `web.address` (default `127.0.0.2`,
+  any `127.0.0.0/8` address) in the configuration; the web server only
+  listens there, over IPv4.
+- ✅ `https://<project>.<tld>` and its subdomains: static files (`[web] root`,
+  default `public/`) confined to the project, or a loopback development
+  server (`[web] proxy`); HTTP redirects to HTTPS.
+- ✅ Local CA created by Caddy in the DevSpace data directory; fingerprint
+  reported by `devspace web status`.
+- ✅ DNS server in the daemon on `127.0.0.1:47053` (UDP) answering
+  `*.<tld>` with the sites address, refusing everything else.
+- ✅ `devspace-helper`: one-shot privileged helper with six typed
+  operations; refuses to run unprivileged; never touches files without the
+  DevSpace marker; trusts only the certificate whose fingerprint was
+  approved.
+- ✅ `devspace system setup|teardown`: plan shown, confirmation, then `sudo`
+  per change; macOS implementation (resolver file, `lo0` alias, `pf` anchor
+  and launch daemon restoring both at boot, System keychain). When the CA
+  does not exist yet, the trust is approved in a second step, once the web
+  server could start on the new address. Conflicts (e.g. another tool's
+  resolver file) abort the setup before any change.
+- ✅ IPC protocol version 3: `web_install|start|stop|restart|status`,
+  `unavailable` and `failed` error codes.
+- ✅ Unit tests (archives incl. hostile entries, checksums, Caddy
+  configuration, sites, DNS, helper operations and certificates, managed
+  files, plans) and an end-to-end test (DNS over UDP, web status).
+- ✅ Manual run on macOS ARM64 without privileges: download, start, HTTPS
+  with the local CA, redirects, wildcard subdomains, proxy, DNS, reload on
+  project change, recovery after `kill -9` of the daemon, conflict
+  detection with Herd (`*.test`); with the new defaults, DNS answering
+  `127.0.0.2`, refusal to start before the alias exists, setup plan
+  displayed without conflict.
+- ✅ First privileged run by the user: resolver for `*.internal`, alias
+  `127.0.0.2` and pf forwarding, CA trust installed with Herd running;
+  `https://<project>.internal` reached through port 443.
+- ✅ Fixes from that run: CA trust check used the `basic` policy instead of
+  `ssl` (reported "missing"); readiness check stalled up to ~70 s once pf
+  was active (now a bind check; restarts take ~0.1 s); PHP projects served
+  as empty static sites (now 503 with an explanation); empty error pages.
+- ⏳ `devspace system teardown` with sudo; persistence across a reboot.
+- ⏳ Linux and Windows system integrations (resolver, port forwarding,
+  trust store, elevation) report "not supported" for now. The web server,
+  DNS server and CA code is portable but has not been built or run there
+  (CI, once a remote exists); `platform` and `helper` are cross-checked
+  with clippy for Windows and Linux.
 
 ## M4 — Runtime package manager ⏳
 

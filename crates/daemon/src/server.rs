@@ -1,9 +1,11 @@
 //! IPC server loop of the daemon.
 //!
-//! The accept loop runs until a client sends [`Request::Shutdown`] or the
-//! process receives a shutdown signal. Shutdown then proceeds in order:
-//! stop accepting and remove the endpoint, notify open connections, wait up
-//! to [`DRAIN_TIMEOUT`] for them to finish, abort the rest.
+//! Startup binds the IPC endpoint, then starts the DNS server and, in the
+//! background, the web server (when installed). The accept loop runs until
+//! a client sends [`Request::Shutdown`] or the process receives a shutdown
+//! signal. Shutdown then proceeds in order: stop accepting and remove the
+//! endpoint, notify open connections, wait up to [`DRAIN_TIMEOUT`] for them
+//! to finish, abort the rest, stop the web server.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,15 +14,17 @@ use std::time::Duration;
 use devspace_core::AppPaths;
 use devspace_core::db::Database;
 use devspace_core::error::report;
-use devspace_ipc::{Endpoint, Listener, Request, ServerConnection, ServerStream};
+use devspace_ipc::{DnsServerState, Endpoint, Listener, Request, ServerConnection, ServerStream};
 use devspace_platform::PlatformError;
 use devspace_platform::signals::ShutdownSignals;
 use tokio::sync::watch;
 use tokio::task::{JoinError, JoinSet};
 use tracing::Instrument as _;
 
+use crate::dns;
 use crate::error::DaemonError;
 use crate::handlers::{self, DaemonState};
+use crate::web::WebServer;
 
 /// Maximum time given to open connections once shutdown has started.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -30,7 +34,7 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 
 /// Serves IPC requests until shutdown.
-pub(crate) async fn run(paths: &AppPaths, db: Database) -> Result<(), DaemonError> {
+pub(crate) async fn run(paths: &AppPaths, db: Database, web: WebServer) -> Result<(), DaemonError> {
     let endpoint = Endpoint::new(&paths.runtime_dir)?;
     let mut listener = Listener::bind(&endpoint)?;
     let mut signals = match ShutdownSignals::install() {
@@ -44,7 +48,29 @@ pub(crate) async fn run(paths: &AppPaths, db: Database) -> Result<(), DaemonErro
         }
     };
 
-    let state = Arc::new(DaemonState::new(db));
+    let state = Arc::new(DaemonState::new(db, web));
+    let dns_port = state.web.config().dns_port;
+    let dns_task = match dns::bind(dns_port).await {
+        Ok(socket) => {
+            tracing::info!(port = dns_port, "DNS server listening on 127.0.0.1");
+            state.set_dns_state(DnsServerState::Listening);
+            Some(tokio::spawn(dns::serve(socket, state.web.config().clone())))
+        }
+        Err(err) => {
+            let message = format!(
+                "cannot listen on 127.0.0.1:{dns_port} (UDP): {err}; free the port or change \
+                 `web.dns_port` in the configuration"
+            );
+            tracing::error!(error = %message, "DNS server unavailable");
+            state.set_dns_state(DnsServerState::Failed { message });
+            None
+        }
+    };
+    {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move { handlers::autostart_web(&state).await });
+    }
+
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let shutdown_tx = Arc::new(shutdown_tx);
     let mut connections = JoinSet::new();
@@ -99,6 +125,10 @@ pub(crate) async fn run(paths: &AppPaths, db: Database) -> Result<(), DaemonErro
             "connections still open after the drain timeout; aborting them"
         );
         connections.abort_all();
+    }
+    state.web.stop().await;
+    if let Some(task) = dns_task {
+        task.abort();
     }
     Ok(())
 }

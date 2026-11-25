@@ -1,6 +1,7 @@
 //! Connection to the daemon, shared by the commands that use it.
 
 use std::future::Future;
+use std::time::Duration;
 
 use devspace_ipc::{Client, Endpoint, ErrorResponse, IpcError, PeerInfo, Request, Response};
 
@@ -40,7 +41,20 @@ pub async fn connect(endpoint: &Endpoint) -> Result<Client, CliError> {
 
 /// Sends `request`, turning an error response into [`CliError::Refused`].
 pub async fn request(client: &mut Client, request: Request) -> Result<Response, CliError> {
-    match client.request(request).await? {
+    refused_as_error(client.request(request).await?)
+}
+
+/// Like [`request`], with a custom time limit.
+pub async fn request_with_timeout(
+    client: &mut Client,
+    request: Request,
+    timeout: Duration,
+) -> Result<Response, CliError> {
+    refused_as_error(client.request_with_timeout(request, timeout).await?)
+}
+
+fn refused_as_error(response: Response) -> Result<Response, CliError> {
+    match response {
         Response::Error(ErrorResponse { message, .. }) => Err(CliError::Refused { message }),
         response => Ok(response),
     }

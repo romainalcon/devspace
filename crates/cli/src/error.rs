@@ -115,6 +115,35 @@ pub enum CliError {
     #[error("failed to determine the current directory")]
     CurrentDir(#[source] io::Error),
 
+    /// The privileged helper is not installed next to `devspace`.
+    #[error("privileged helper `{}` not found next to the devspace executable", path.display())]
+    HelperNotFound {
+        /// Expected location.
+        path: PathBuf,
+    },
+
+    /// The privileged helper failed (or the user did not authenticate).
+    #[error(
+        "`devspace-helper {operation}` failed ({status}); the changes listed before it were applied"
+    )]
+    HelperFailed {
+        /// Operation that failed.
+        operation: &'static str,
+        /// Exit status of sudo / the helper.
+        status: ExitStatus,
+    },
+
+    /// The system setup cannot proceed; nothing was changed.
+    #[error("{reason}; nothing was changed")]
+    SetupBlocked {
+        /// Explanation.
+        reason: String,
+    },
+
+    /// The confirmation prompt failed.
+    #[error("failed to read the confirmation")]
+    Prompt(#[source] io::Error),
+
     /// A process holds the instance lock but does not accept connections.
     #[error(
         "a daemon process holds `{}` but does not accept connections; it may still be \

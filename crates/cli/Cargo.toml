@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 devspace-core.workspace = true
+devspace-helper.workspace = true
 devspace-ipc.workspace = true
 devspace-platform.workspace = true
 clap.workspace = true

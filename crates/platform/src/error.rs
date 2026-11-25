@@ -156,6 +156,51 @@ pub enum PlatformError {
         #[source]
         source: io::Error,
     },
+
+    /// The feature is not implemented on this platform yet.
+    #[error("{feature} is not supported on this platform yet")]
+    Unsupported {
+        /// Description of the missing feature.
+        feature: &'static str,
+    },
+
+    /// An argument of a system integration is invalid.
+    #[error("invalid argument: {detail}")]
+    InvalidArgument {
+        /// Human-readable explanation.
+        detail: String,
+    },
+
+    /// A system file could not be read, written or removed.
+    #[error("failed to access system file `{}`", path.display())]
+    SystemFile {
+        /// File path.
+        path: PathBuf,
+        /// Underlying I/O error.
+        #[source]
+        source: io::Error,
+    },
+
+    /// A system file exists but was not created by DevSpace; it is never
+    /// modified or removed.
+    #[error(
+        "`{}` exists and is not managed by DevSpace (another tool may use it); \
+         refusing to modify it",
+        path.display()
+    )]
+    ForeignSystemFile {
+        /// File path.
+        path: PathBuf,
+    },
+
+    /// A system command could not be run or failed.
+    #[error("`{command}` failed: {detail}")]
+    SystemCommand {
+        /// Command line, for the message.
+        command: String,
+        /// Exit status and error output, or the reason it could not run.
+        detail: String,
+    },
 }
 
 impl PlatformError {

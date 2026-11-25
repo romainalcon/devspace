@@ -7,6 +7,7 @@ members = [
     "crates/cli",
     "crates/ipc",
     "crates/platform",
+    "crates/helper",
     "apps/desktop/src-tauri",
 ]
 
@@ -23,6 +24,7 @@ publish = false
 devspace-core = { path = "crates/core" }
 devspace-ipc = { path = "crates/ipc" }
 devspace-platform = { path = "crates/platform" }
+devspace-helper = { path = "crates/helper" }
 
 # Serialization and configuration
 serde = { version = "1", features = ["derive"] }
@@ -59,6 +61,14 @@ rusqlite = { version = "0.43", default-features = false, features = ["bundled"] 
 
 # Filesystem
 dunce = "1"
+
+# Downloads, checksums and archives
+ureq = { version = "3.5", default-features = false, features = ["rustls"] }
+sha2 = "0.11"
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+base64 = "0.23"
 
 # Tests
 tempfile = "3"

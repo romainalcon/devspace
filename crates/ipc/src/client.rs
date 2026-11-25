@@ -122,17 +122,33 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
     /// [`IpcError::ConnectionClosed`], [`IpcError::UnexpectedMessage`] for a
     /// response to another request, or a framing error.
     pub async fn request(&mut self, request: Request) -> Result<Response> {
+        self.request_with_timeout(request, REQUEST_TIMEOUT).await
+    }
+
+    /// Like [`Client::request`], with a custom time limit for requests that
+    /// legitimately take long (e.g. downloads). After a timeout the
+    /// connection must be dropped: a late response would be mistaken for
+    /// the answer to the next request.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Client::request`], the timeout being `timeout`.
+    pub async fn request_with_timeout(
+        &mut self,
+        request: Request,
+        timeout: Duration,
+    ) -> Result<Response> {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
         let stream = &mut self.stream;
-        let answer = tokio::time::timeout(REQUEST_TIMEOUT, async {
+        let answer = tokio::time::timeout(timeout, async {
             write_frame(stream, &ClientMessage::Request { id, request }).await?;
             read_frame(stream).await
         })
         .await
         .map_err(|_| IpcError::Timeout {
             operation: "waiting for the daemon response",
-            timeout: REQUEST_TIMEOUT,
+            timeout,
         })??;
         match answer {
             Some(ServerMessage::Response {

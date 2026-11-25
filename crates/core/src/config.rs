@@ -9,12 +9,20 @@
 //! [logging]
 //! level = "info"     # error | warn | info | debug | trace
 //! format = "compact" # compact | pretty
+//!
+//! [web]
+//! tld = "internal"       # sites at https://<project>.internal
+//! address = "127.0.0.2"  # loopback address of the sites
+//! http_port = 47080      # web server ports on that address
+//! https_port = 47443
+//! dns_port = 47053       # DNS server (127.0.0.1, UDP) answering for *.<tld>
 //! ```
 
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::Path;
 
+use devspace_helper::{LoopbackAddress, Tld};
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
@@ -30,6 +38,8 @@ pub struct GlobalConfig {
     pub schema_version: u32,
     /// Logging settings.
     pub logging: LoggingConfig,
+    /// Web server and local domains.
+    pub web: WebConfig,
 }
 
 impl Default for GlobalConfig {
@@ -37,7 +47,59 @@ impl Default for GlobalConfig {
         Self {
             schema_version: CONFIG_SCHEMA_VERSION,
             logging: LoggingConfig::default(),
+            web: WebConfig::default(),
         }
+    }
+}
+
+/// Web server and local domain settings.
+///
+/// Sites are served at `https://<project>.<tld>` on `address`, a loopback
+/// address. The defaults (`internal`, `127.0.0.2`) do not collide with
+/// other tools using `*.test` on `127.0.0.1` (Laravel Herd, Valet).
+///
+/// Every port must be unprivileged (at least 1024): the web server and the
+/// DNS server never run elevated. Ports 80 and 443 of `address` reach the
+/// web server through the port forwarding installed by
+/// `devspace system setup`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WebConfig {
+    /// Top-level domain of the sites.
+    pub tld: Tld,
+    /// Loopback address of the sites.
+    pub address: LoopbackAddress,
+    /// HTTP port of the web server (redirects to HTTPS).
+    pub http_port: u16,
+    /// HTTPS port of the web server.
+    pub https_port: u16,
+    /// UDP port of the DNS server answering for the local domains.
+    pub dns_port: u16,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            tld: Tld::default(),
+            address: LoopbackAddress::default(),
+            http_port: 47080,
+            https_port: 47443,
+            dns_port: 47053,
+        }
+    }
+}
+
+impl WebConfig {
+    /// Checks that the ports are unprivileged and that the two web server
+    /// ports differ.
+    fn validate(&self) -> std::result::Result<(), &'static str> {
+        if self.http_port < 1024 || self.https_port < 1024 || self.dns_port < 1024 {
+            return Err("web ports must be at least 1024 (DevSpace never runs privileged)");
+        }
+        if self.http_port == self.https_port {
+            return Err("web.http_port and web.https_port must differ");
+        }
+        Ok(())
     }
 }
 
@@ -98,8 +160,9 @@ impl GlobalConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::ConfigParse`] for invalid TOML or schema mismatch, and
-    /// [`Error::UnsupportedConfigVersion`] for an unknown `schema_version`.
+    /// Returns [`Error::ConfigParse`] for invalid TOML or schema mismatch,
+    /// [`Error::UnsupportedConfigVersion`] for an unknown `schema_version`,
+    /// and [`Error::InvalidConfig`] for inconsistent values.
     pub fn from_toml(text: &str, origin: &Path) -> Result<Self> {
         let config: Self = toml::from_str(text).map_err(|source| Error::ConfigParse {
             path: origin.to_path_buf(),
@@ -112,6 +175,13 @@ impl GlobalConfig {
                 supported: CONFIG_SCHEMA_VERSION,
             });
         }
+        config
+            .web
+            .validate()
+            .map_err(|reason| Error::InvalidConfig {
+                path: origin.to_path_buf(),
+                reason,
+            })?;
         Ok(config)
     }
 
@@ -209,6 +279,49 @@ mod tests {
         };
         let text = config.to_toml().unwrap();
         assert_eq!(GlobalConfig::from_toml(&text, origin()).unwrap(), config);
+    }
+
+    #[test]
+    fn web_ports_are_validated() {
+        let config = GlobalConfig::from_toml("[web]\nhttps_port = 8443\n", origin()).unwrap();
+        assert_eq!(config.web.https_port, 8443);
+        assert_eq!(config.web.http_port, WebConfig::default().http_port);
+        for invalid in [
+            "[web]\nhttp_port = 80\n",
+            "[web]\ndns_port = 53\n",
+            "[web]\nhttp_port = 9000\nhttps_port = 9000\n",
+        ] {
+            assert!(
+                matches!(
+                    GlobalConfig::from_toml(invalid, origin()),
+                    Err(Error::InvalidConfig { .. })
+                ),
+                "{invalid}"
+            );
+        }
+        assert!(GlobalConfig::from_toml("[web]\nhttp_port = 70000\n", origin()).is_err());
+
+        let config =
+            GlobalConfig::from_toml("[web]\ntld = \"test\"\naddress = \"127.0.0.1\"\n", origin())
+                .unwrap();
+        assert_eq!(config.web.tld.as_str(), "test");
+        assert!(config.web.address.is_primary());
+        assert_eq!(GlobalConfig::default().web.tld.as_str(), "internal");
+        assert_eq!(GlobalConfig::default().web.address.to_string(), "127.0.0.2");
+        for invalid in [
+            "[web]\ntld = \"local\"\n",
+            "[web]\ntld = \"Test\"\n",
+            "[web]\naddress = \"192.168.1.2\"\n",
+            "[web]\naddress = \"::1\"\n",
+        ] {
+            assert!(
+                matches!(
+                    GlobalConfig::from_toml(invalid, origin()),
+                    Err(Error::ConfigParse { .. })
+                ),
+                "{invalid}"
+            );
+        }
     }
 
     #[test]

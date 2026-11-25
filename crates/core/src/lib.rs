@@ -10,6 +10,8 @@
 //! - [`instance`]: single-instance lock of the daemon.
 //! - [`logging`]: `tracing` subscriber initialisation (stderr, rolling files).
 //! - [`project`]: project registry and per-project manifest (`devspace.toml`).
+//! - [`web`]: web server (Caddy), local domains, DNS answers and local
+//!   certificate authority.
 //! - [`ensure_unprivileged`]: guard refusing elevated execution.
 
 pub mod config;
@@ -18,6 +20,7 @@ pub mod error;
 pub mod instance;
 pub mod logging;
 pub mod project;
+pub mod web;
 
 pub use devspace_platform::AppPaths;
 pub use error::{Error, Result};
