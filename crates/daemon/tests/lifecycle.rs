@@ -25,6 +25,17 @@ impl Drop for KillOnPanic {
     }
 }
 
+/// Whether the tests run with administrator rights, which the daemon
+/// refuses (e.g. on the Windows runners of GitHub Actions, elevated by
+/// default); the end-to-end tests are then skipped.
+fn skip_when_elevated() -> bool {
+    let elevated = devspace_platform::privileges::is_elevated().unwrap();
+    if elevated {
+        eprintln!("skipped: the daemon refuses to run with administrator rights");
+    }
+    elevated
+}
+
 fn peer() -> PeerInfo {
     PeerInfo {
         name: "lifecycle-test".into(),
@@ -91,6 +102,9 @@ async fn wait_for_exit(child: &mut Child) -> ExitStatus {
 
 #[tokio::test]
 async fn serve_refuse_second_instance_and_shut_down() {
+    if skip_when_elevated() {
+        return;
+    }
     let home = tempfile::tempdir().unwrap();
     let endpoint = endpoint(home.path());
     let mut child = daemon_command(home.path())
@@ -179,6 +193,9 @@ fn error_code(response: Response) -> ErrorCode {
 
 #[tokio::test]
 async fn project_registry_is_served_and_persisted() {
+    if skip_when_elevated() {
+        return;
+    }
     let home = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
     let blog = workspace.path().join("Blog");
@@ -255,6 +272,9 @@ async fn project_registry_is_served_and_persisted() {
 #[cfg(unix)]
 #[tokio::test]
 async fn sigterm_triggers_graceful_shutdown() {
+    if skip_when_elevated() {
+        return;
+    }
     let home = tempfile::tempdir().unwrap();
     let mut child = daemon_command(home.path())
         .stderr(stderr_file(home.path()))
@@ -289,6 +309,9 @@ fn free_port() -> u16 {
 
 #[tokio::test]
 async fn dns_and_web_status_are_served() {
+    if skip_when_elevated() {
+        return;
+    }
     use devspace_ipc::{DnsServerState, IntegrationStatus, SiteTargetInfo, WebServerState};
 
     let home = tempfile::tempdir().unwrap();
@@ -370,6 +393,9 @@ async fn dns_and_web_status_are_served() {
 
 #[tokio::test]
 async fn runtimes_are_listed_and_selected_per_project() {
+    if skip_when_elevated() {
+        return;
+    }
     let home = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
     let shop = workspace.path().join("shop");
@@ -467,6 +493,9 @@ async fn runtimes_are_listed_and_selected_per_project() {
 
 #[tokio::test]
 async fn services_follow_project_requirements() {
+    if skip_when_elevated() {
+        return;
+    }
     let home = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
     let blog = workspace.path().join("blog");

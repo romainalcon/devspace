@@ -364,7 +364,19 @@ raised), still none on macOS x86_64.
 - ⏳ First `Release` run (tag `v0.1.0`).
 - ⏳ Real `system setup|teardown` with sudo and from the application
   (needs the user's password); update installed from a published release.
-- ⚠️ Windows and Linux bundles, the NSIS `PATH` hooks, the Windows stop
-  commands and the Valkey Linux builds have never run (CI).
+- ✅ First CI runs on the five platforms: clippy and tests pass on macOS
+  ARM64/x86_64, Linux x86_64/ARM64 and Windows x86_64. Fixes from the
+  Windows run: the signed index was converted to CRLF by Git checkouts
+  (its signature failed: every Windows build would have had an unusable
+  package manager; `.gitattributes`); Unix-only tests (tar symbolic links,
+  PHP-FPM configuration, `link-cli` path); Windows-only dead test helpers;
+  `RunEvent::Reopen` only exists on macOS.
+- ⚠️ The Windows runners of GitHub Actions are elevated, and the daemon
+  refuses to run elevated: the end-to-end tests of the daemon are skipped
+  there, so the daemon has still never run on Windows. The M1 to M5
+  Windows warnings (named pipe ACL, servers, stop) stand.
+- ⚠️ Windows and Linux bundles, the NSIS `PATH` hooks and the Windows stop
+  commands have never run (first `Release` run pending). The Valkey Linux
+  builds start and answer `PING` in the `Packages` workflow.
 - ⚠️ `system setup` dry-run refuses while Caddy is not installed (same
   rule as setup, M3).
