@@ -138,7 +138,7 @@ coexist with Laravel Herd (`*.test` on `127.0.0.1`).
   (CI, once a remote exists); `platform` and `helper` are cross-checked
   with clippy for Windows and Linux.
 
-## M4 — Runtime package manager 🔄 (awaiting validation)
+## M4 — Runtime package manager ✅
 
 Design choices approved on 2026-11-26: PHP and Node.js; PHP binaries from
 static-php-cli (macOS, Linux) and windows.php.net (Windows), Node.js from
@@ -197,10 +197,71 @@ maintainer's Ed25519 key (minisign format), checksums per archive.
   the pinning machine); Windows PHP checksums from `releases.json`.
 - ⚠️ No automatic index update: a new index ships with a new DevSpace
   build until a hosting exists (M7).
+- ✅ Validated by the user on 2026-11-26 (M5 started).
 
-## M5 — Services ⏳
+## M5 — Services ✅
 
-- Supervised databases and caches, loopback-only by default.
+Design choices approved on 2026-11-26: PostgreSQL and MySQL; instances
+shared by every project, one per service and series (major version of
+PostgreSQL, `MAJOR.MINOR` of MySQL), started when a project requires them;
+standard ports on the sites address (`127.0.0.2:5432`, `127.0.0.2:3306`),
+next to Laravel Herd's on `127.0.0.1`; administrators without a password
+(as Herd). Redis/Valkey postponed to M7: neither publishes macOS or
+Windows binaries, and building them needs a hosting.
+
+- ✅ Packages `postgresql` and `mysql` in the signed index (#2):
+  PostgreSQL 17.12, 18.7 and 19.0 from theseus-rs/postgresql-binaries
+  (SHA-256 published with each archive, cross-checked with GitHub's
+  digests); MySQL 8.4.13.1 and 9.7.4.1 LTS from cdn.mysql.com (SHA-256
+  computed at pin time, MD5 cross-checked with Oracle's download pages).
+- ✅ Four-component versions (`8.4.13.1`); `.tar.xz` archives (liblzma,
+  statically linked); tar hard links recreated as copies of a file
+  extracted before them by the same archive.
+- ✅ `[services]` in `devspace.toml` (`postgresql = "18"`, `mysql = "8.4"`);
+  `[services]` in `config.toml` (`mysql_port`, `postgresql_port`).
+- ✅ Plan of the instances: required by a project or started by the user,
+  unless stopped by the user; one series per service at a time (they share
+  its port); choices stored in the database (schema v2).
+- ✅ Data directory created atomically at the first start (`initdb
+  --auth=trust`, `mysqld --initialize-insecure` plus `root@127.%`);
+  servers supervised by the daemon (foreground, own session, pid files,
+  orphan cleanup, `SIGINT` fast shutdown for PostgreSQL, 30 s stop
+  timeout); Unix sockets in the private runtime directory.
+- ✅ IPC protocol version 5: `service_list|start|stop`.
+- ✅ `devspace service list|install|start|stop`; `devspace exec` points
+  `psql` and `mysql` at the instances (`PGHOST`, `PGPORT`, `PGUSER`,
+  `MYSQL_HOST`, `MYSQL_TCP_PORT`).
+- ✅ Unit tests (versions, archives, series, plan, choices, command lines,
+  initialisation with fake tools, CLI output) and an end-to-end test
+  (requirements, refusals, choices without installation).
+- ✅ Index #2 signed with the maintainer key on 2026-11-26.
+- ✅ Manual run on macOS ARM64 in an isolated `DEVSPACE_HOME`: real
+  installation of PostgreSQL 17.12 and 18.7 and MySQL 8.4.13.1; first
+  start with initialisation (< 1 s); TCP on `127.0.0.2` and socket
+  connections; `devspace exec` with `psql` and `mysql`; automatic start
+  of an instance required by a project; stop remembered across daemon
+  restarts; restart of a `started` instance with the daemon; data kept;
+  recovery after `kill -9` of the daemon (orphans stopped) and of a
+  server (reported, restarted by `start`); switch between two PostgreSQL
+  series on the same port; removal of a version in use; project removal;
+  busy port reported; nothing left running after `daemon stop`.
+- ✅ Fixes from that run: `initdb` only trusts `127.0.0.1` (DevSpace now
+  writes its own `pg_hba.conf`, passed as `hba_file`); the socket
+  directory was not private; MySQL prints `8.4.13` for the `8.4.13.1`
+  rebuild (version checks ignore the rebuild number); an unsatisfied
+  requirement naming a series now creates the instance, so that choices
+  apply to it before installation.
+- ⚠️ On macOS, a server listening on every address (`0.0.0.0:5432`) does
+  not prevent DevSpace from listening on `127.0.0.2:5432`; connections to
+  `127.0.0.2` reach DevSpace.
+- ⏳ MySQL 9.7 and PostgreSQL 19 pinned and checksummed, not run.
+- ✅ Validated by the user on 2026-11-26.
+- ⚠️ MySQL publishes no macOS x86_64 build of 8.4/9.7, and only a full
+  Linux ARM64 archive (≈ 820 MB, above the index limit): not available on
+  these two platforms.
+- ⚠️ Windows: the servers run, but are stopped by `TerminateProcess` (no
+  graceful stop yet), and nothing has been run there (CI, once a remote
+  exists).
 
 ## M6 — Desktop application ⏳
 
@@ -209,3 +270,5 @@ maintainer's Ed25519 key (minisign format), checksums per archive.
 ## M7 — Distribution ⏳
 
 - Signed installers and updates for each platform.
+- Redis/Valkey service, built by DevSpace for macOS and Linux (no
+  official binaries) and hosted with the releases.

@@ -20,14 +20,15 @@
 //! (M2) adds the project registry and the `error` response; version 3 (M3)
 //! adds the web server requests and the `unavailable` and `failed` error
 //! codes; version 4 (M4) adds the runtime requests, PHP sites and the PHP
-//! process managers in the web status.
+//! process managers in the web status; version 5 (M5) adds the service
+//! requests.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 /// Version of the protocol implemented by this build.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Name and version of a program taking part in a connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,6 +166,27 @@ pub enum Request {
         /// Absolute directory, as seen by the client.
         directory: PathBuf,
     },
+    /// Service instances, answered by [`Response::Services`].
+    ServiceList,
+    /// Starts a service instance and keeps it running across daemon
+    /// restarts, answered by [`Response::Services`].
+    ServiceStart {
+        /// Service name (`mysql`, `postgresql`).
+        name: String,
+        /// Series (`18`, `8.4`); absent: the newest installed one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        series: Option<String>,
+    },
+    /// Stops a service instance and keeps it stopped, even when projects
+    /// require it, until it is started again; answered by
+    /// [`Response::Services`].
+    ServiceStop {
+        /// Service name.
+        name: String,
+        /// Series; absent: every series of the service.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        series: Option<String>,
+    },
 }
 
 /// Answers of the daemon.
@@ -196,6 +218,8 @@ pub enum Response {
     RuntimeRemoved(RuntimeInfo),
     /// Answer to [`Request::RuntimeEnv`].
     RuntimeEnv(RuntimeEnv),
+    /// Answer to the service requests: the state after the request.
+    Services(ServiceList),
     /// The request was understood but failed.
     Error(ErrorResponse),
 }
@@ -343,7 +367,61 @@ pub struct RuntimeEnvEntry {
     pub variables: Vec<(String, String)>,
 }
 
-/// State of the web server process.
+/// Service instances known to the daemon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceList {
+    /// Loopback address the services listen on.
+    pub address: String,
+    /// Every installed, required or chosen instance, sorted by service
+    /// then series.
+    pub instances: Vec<ServiceInstanceInfo>,
+    /// Requirements of the projects that no installed version satisfies,
+    /// as explanations.
+    pub missing: Vec<String>,
+}
+
+/// One service instance: a service and a series of versions sharing a
+/// data directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceInstanceInfo {
+    /// Service name.
+    pub name: String,
+    /// Series (`18`, `8.4`).
+    pub series: String,
+    /// Installed version it runs, if any.
+    pub version: Option<String>,
+    /// TCP port on [`ServiceList::address`].
+    pub port: u16,
+    /// Administrator account, without a password.
+    pub user: String,
+    /// Choice of the user.
+    pub mode: ServiceMode,
+    /// Registered projects requiring it.
+    pub required_by: Vec<String>,
+    /// Server process.
+    pub state: WebServerState,
+    /// Why it does not run although it should.
+    pub blocked: Option<String>,
+    /// Data directory (created at the first start).
+    pub data_dir: PathBuf,
+    /// Output of the server.
+    pub log_file: PathBuf,
+}
+
+/// Choice of the user for a service instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceMode {
+    /// Runs when a registered project requires it.
+    Automatic,
+    /// Started by the user: runs even if no project requires it.
+    Started,
+    /// Stopped by the user: does not run even if projects require it.
+    Stopped,
+}
+
+/// State of the web server process (also of the PHP process managers and
+/// of the service servers).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum WebServerState {
@@ -783,6 +861,51 @@ mod tests {
                                   "bin_dirs": ["/data/runtimes/php/8.4.23/bin"],
                                   "variables": [["PHPRC", "/data/php/8.4.23"]]}],
                     "missing": ["node 24 is not installed"]}),
+        );
+    }
+
+    #[test]
+    fn service_wire_format() {
+        assert_wire(&Request::ServiceList, &json!({"method": "service_list"}));
+        assert_wire(
+            &Request::ServiceStart {
+                name: "postgresql".into(),
+                series: Some("18".into()),
+            },
+            &json!({"method": "service_start", "name": "postgresql", "series": "18"}),
+        );
+        assert_wire(
+            &Request::ServiceStop {
+                name: "mysql".into(),
+                series: None,
+            },
+            &json!({"method": "service_stop", "name": "mysql"}),
+        );
+        assert_wire(
+            &Response::Services(ServiceList {
+                address: "127.0.0.2".into(),
+                instances: vec![ServiceInstanceInfo {
+                    name: "postgresql".into(),
+                    series: "18".into(),
+                    version: Some("18.7.0".into()),
+                    port: 5432,
+                    user: "postgres".into(),
+                    mode: ServiceMode::Automatic,
+                    required_by: vec!["blog".into()],
+                    state: WebServerState::Running { pid: 7 },
+                    blocked: None,
+                    data_dir: PathBuf::from("/data/services/postgresql/18"),
+                    log_file: PathBuf::from("/logs/postgresql-18.log"),
+                }],
+                missing: vec![],
+            }),
+            &json!({"kind": "services", "address": "127.0.0.2", "missing": [],
+                    "instances": [{"name": "postgresql", "series": "18", "version": "18.7.0",
+                                   "port": 5432, "user": "postgres", "mode": "automatic",
+                                   "required_by": ["blog"],
+                                   "state": {"state": "running", "pid": 7}, "blocked": null,
+                                   "data_dir": "/data/services/postgresql/18",
+                                   "log_file": "/logs/postgresql-18.log"}]}),
         );
     }
 

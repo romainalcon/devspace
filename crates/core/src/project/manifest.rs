@@ -16,6 +16,10 @@
 //! [runtimes]        # versions used by the project: MAJOR, MAJOR.MINOR
 //! php = "8.4"       # or MAJOR.MINOR.PATCH; the newest installed match
 //! node = "24"       # is used (the newest installed version if absent)
+//!
+//! [services]        # services the project uses, started by the daemon:
+//! postgresql = "18" # MAJOR (PostgreSQL) or MAJOR.MINOR (MySQL series),
+//! mysql = "8.4"     # matched like the runtimes
 //! ```
 //!
 //! Every key is optional and unknown keys are rejected. DevSpace only reads
@@ -54,6 +58,8 @@ pub struct Manifest {
     pub web: ManifestWeb,
     /// `[runtimes]` table.
     pub runtimes: ManifestRuntimes,
+    /// `[services]` table.
+    pub services: ManifestServices,
 }
 
 impl Default for Manifest {
@@ -63,6 +69,7 @@ impl Default for Manifest {
             project: ManifestProject::default(),
             web: ManifestWeb::default(),
             runtimes: ManifestRuntimes::default(),
+            services: ManifestServices::default(),
         }
     }
 }
@@ -78,12 +85,39 @@ pub struct ManifestRuntimes {
 }
 
 impl ManifestRuntimes {
-    /// Requirement for `name`, if the manifest sets one.
+    /// Requirement for `name`, if the manifest sets one (never for the
+    /// services, see [`ManifestServices`]).
     #[must_use]
     pub const fn get(&self, name: RuntimeName) -> Option<VersionReq> {
         match name {
             RuntimeName::Node => self.node,
             RuntimeName::Php => self.php,
+            RuntimeName::Mysql | RuntimeName::Postgresql => None,
+        }
+    }
+}
+
+/// `[services]` table of the manifest: the services the project uses. The
+/// daemon runs the instance of the newest installed version matching each
+/// requirement.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ManifestServices {
+    /// MySQL versions accepted.
+    pub mysql: Option<VersionReq>,
+    /// PostgreSQL versions accepted.
+    pub postgresql: Option<VersionReq>,
+}
+
+impl ManifestServices {
+    /// Requirement for the service packaged as `name`, if the manifest
+    /// sets one.
+    #[must_use]
+    pub const fn get(&self, name: RuntimeName) -> Option<VersionReq> {
+        match name {
+            RuntimeName::Mysql => self.mysql,
+            RuntimeName::Postgresql => self.postgresql,
+            RuntimeName::Node | RuntimeName::Php => None,
         }
     }
 }
@@ -236,6 +270,17 @@ impl Manifest {
         Ok(manifest)
     }
 
+    /// Requirement of the project for the package `name`: `[runtimes]`
+    /// for the language runtimes, `[services]` for the services.
+    #[must_use]
+    pub const fn requirement(&self, name: RuntimeName) -> Option<VersionReq> {
+        if name.is_service() {
+            self.services.get(name)
+        } else {
+            self.runtimes.get(name)
+        }
+    }
+
     /// Reads the manifest of the project in `dir`, or returns `None` when the
     /// project has none.
     ///
@@ -365,6 +410,38 @@ mod tests {
             "[runtimes]\nphp = \"latest\"\n",
             "[runtimes]\nphp = 8.4\n",
             "[runtimes]\npython = \"3\"\n",
+        ] {
+            assert!(
+                matches!(
+                    Manifest::from_toml(bad, origin()),
+                    Err(Error::ManifestParse { .. })
+                ),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn service_requirements_are_validated() {
+        let manifest = Manifest::from_toml(
+            "[services]\npostgresql = \"18\"\nmysql = \"8.4\"\n",
+            origin(),
+        )
+        .unwrap();
+        assert_eq!(
+            manifest.requirement(RuntimeName::Postgresql),
+            Some(VersionReq::parse("18").unwrap())
+        );
+        assert_eq!(
+            manifest.requirement(RuntimeName::Mysql),
+            Some(VersionReq::parse("8.4").unwrap())
+        );
+        assert_eq!(manifest.requirement(RuntimeName::Php), None);
+        assert_eq!(manifest.runtimes.get(RuntimeName::Mysql), None);
+        for bad in [
+            "[services]\nredis = \"7\"\n",
+            "[services]\nmysql = \"latest\"\n",
+            "[runtimes]\nmysql = \"8.4\"\n",
         ] {
             assert!(
                 matches!(

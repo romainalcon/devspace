@@ -1,11 +1,13 @@
 //! IPC server loop of the daemon.
 //!
 //! Startup binds the IPC endpoint, then starts the DNS server and, in the
-//! background, the web server (when installed). The accept loop runs until
+//! background, the web server (when installed) and the service instances
+//! to run. The accept loop runs until
 //! a client sends [`Request::Shutdown`] or the process receives a shutdown
 //! signal. Shutdown then proceeds in order: stop accepting and remove the
 //! endpoint, notify open connections, wait up to [`DRAIN_TIMEOUT`] for them
-//! to finish, abort the rest, stop the web server and the PHP-FPM masters.
+//! to finish, abort the rest, stop the web server, the PHP-FPM masters and
+//! the service servers.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,6 +27,7 @@ use crate::dns;
 use crate::error::DaemonError;
 use crate::handlers::{self, DaemonState};
 use crate::runtimes::Runtimes;
+use crate::services::{self, Services};
 use crate::web::WebServer;
 
 /// Maximum time given to open connections once shutdown has started.
@@ -40,6 +43,7 @@ pub(crate) async fn run(
     db: Database,
     web: WebServer,
     runtimes: Runtimes,
+    services: Services,
 ) -> Result<(), DaemonError> {
     let endpoint = Endpoint::new(&paths.runtime_dir)?;
     let mut listener = Listener::bind(&endpoint)?;
@@ -54,7 +58,7 @@ pub(crate) async fn run(
         }
     };
 
-    let state = Arc::new(DaemonState::new(db, web, runtimes));
+    let state = Arc::new(DaemonState::new(db, web, runtimes, services));
     let dns_port = state.web.config().dns_port;
     let dns_task = match dns::bind(dns_port).await {
         Ok(socket) => {
@@ -76,6 +80,7 @@ pub(crate) async fn run(
         let state = Arc::clone(&state);
         tokio::spawn(async move { handlers::autostart_web(&state).await });
     }
+    services::apply_in_background(&state);
 
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let shutdown_tx = Arc::new(shutdown_tx);
@@ -134,6 +139,7 @@ pub(crate) async fn run(
     }
     state.web.stop().await;
     state.runtimes.php.stop_all().await;
+    state.services.stop_all().await;
     if let Some(task) = dns_task {
         task.abort();
     }

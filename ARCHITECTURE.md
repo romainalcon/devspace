@@ -27,14 +27,16 @@ that keep it maintainable. Any change to these rules must be documented here
 
    devspaced ──spawns──▶ Caddy (user, loopback only)
    devspaced ──spawns──▶ PHP-FPM per PHP version (user, private socket)
+   devspaced ──spawns──▶ PostgreSQL / MySQL per series (user, loopback)
    devspace system setup ──sudo──▶ devspace-helper (one operation, exits)
 ```
 
-Status in M4: the daemon serves the IPC protocol, owns the SQLite
-database, runs the DNS server, supervises Caddy and the PHP-FPM masters,
-and installs runtimes; the CLI uses IPC for the daemon lifecycle, the
-project registry (`devspace project …`), the web server (`devspace web …`)
-and the runtimes (`devspace runtime …`, `devspace exec`), uses `devspace-core` directly for local,
+Status in M5: the daemon serves the IPC protocol, owns the SQLite
+database, runs the DNS server, supervises Caddy, the PHP-FPM masters and
+the service servers, and installs runtimes; the CLI uses IPC for the
+daemon lifecycle, the project registry (`devspace project …`), the web
+server (`devspace web …`), the runtimes (`devspace runtime …`,
+`devspace exec`) and the services (`devspace service …`), uses `devspace-core` directly for local,
 daemon-independent commands (configuration, paths), and starts the
 privileged helper through `sudo` for `devspace system setup|teardown`. The
 desktop application is not connected yet (M6).
@@ -44,10 +46,10 @@ desktop application is not connected yet (M6).
 | Crate | Path | Kind | Responsibility |
 |---|---|---|---|
 | `devspace-platform` | `crates/platform` | lib | **Only** place for platform-specific code: directory conventions, build target, privilege detection, local sockets / named pipes and peer identity, shutdown signals, processes (detach, executable of a pid, stop), path canonicalisation and atomic writes, system integrations (resolver, port forwarding, trust store) and elevation; later service registration. Exposes portable APIs. |
-| `devspace-core` | `crates/core` | lib | Business logic: typed configuration, errors, logging setup, single-instance lock, SQLite storage and migrations, project registry and manifest, web server (pinned Caddy release, archive extraction, sites, Caddy configuration, local CA, DNS answers), archives and downloads, runtimes (signed package index, installation, selection, PHP-FPM configuration); later services. No Tauri, no UI, no transport. |
+| `devspace-core` | `crates/core` | lib | Business logic: typed configuration, errors, logging setup, single-instance lock, SQLite storage and migrations, project registry and manifest, web server (pinned Caddy release, archive extraction, sites, Caddy configuration, local CA, DNS answers), archives and downloads, runtimes (signed package index, installation, selection, PHP-FPM configuration), services (plan of the instances, data directories, command lines). No Tauri, no UI, no transport. |
 | `devspace-helper` | `crates/helper` | lib + bin `devspace-helper` | Privileged helper (bin) and what its callers share with it (lib): typed operations and their command-line encoding, PEM certificates and fingerprints, the local TLD. The lib has no OS code. |
 | `devspace-ipc` | `crates/ipc` | lib | Protocol between daemon and clients: messages, framing, versioning, handshake, typed client and server connections. Re-exports the transport of `devspace-platform`. |
-| `devspace-daemon` | `crates/daemon` | bin `devspaced` | Long-running process owning projects, services and processes. M4: IPC server, lifecycle, database owner, project requests, DNS server, supervision of Caddy and PHP-FPM, runtime requests. |
+| `devspace-daemon` | `crates/daemon` | bin `devspaced` | Long-running process owning projects, services and processes. M5: IPC server, lifecycle, database owner, project requests, DNS server, supervision of Caddy, PHP-FPM and the service servers, runtime and service requests. |
 | `devspace-cli` | `crates/cli` | bin `devspace` | Command-line client. |
 | `devspace-registry` | `tools/registry` | bin `devspace-registry` | Maintainer tool: signing key generation, signing and verification of the package index. Never shipped. |
 | `devspace-desktop` | `apps/desktop/src-tauri` | bin + lib | Tauri 2 shell with a Vue 3 / TypeScript frontend. Starter template in M0. |
@@ -205,7 +207,8 @@ handshake messages never change shape; any other change increments
   `IMMEDIATE` transaction together with the version bump. A database newer
   than the build is refused without modification (no downgrade).
 - Tables use `STRICT` typing. Schema v1: `projects(id, name UNIQUE,
-  path UNIQUE, added_at)`.
+  path UNIQUE, added_at)`. Schema v2: `services(name, series, mode)`,
+  primary key `(name, series)`, `mode` `started|stopped`.
 - The connection is synchronous: the daemon keeps it behind a
   `std::sync::Mutex` and uses it from `spawn_blocking` tasks, never from
   async worker threads.
@@ -306,7 +309,69 @@ handshake messages never change shape; any other change increments
 - `devspace exec` asks the daemon for the environment of the current
   directory and runs the command itself (with the user's terminal), the
   runtime directories first in `PATH` and `PHPRC` pointing to the
-  DevSpace `php.ini`. Nothing from the project is executed by DevSpace.
+  DevSpace `php.ini`, and the variables of the database clients (`PGHOST`,
+  `PGPORT`, `PGUSER`, `MYSQL_HOST`, `MYSQL_TCP_PORT`; never `DB_*`, which
+  would override a project's `.env`). Nothing from the project is
+  executed by DevSpace.
+- Versions have three numbers, or four for rebuilds (`8.4.13.1`, the
+  fourth never `0`; MySQL programs report `8.4.13`, so their check ignores
+  it). Requirements stay `MAJOR[.MINOR[.PATCH]]`; an exact
+  `PATCH` also accepts its rebuilds. Version checks compare the first
+  line of the program's output, from its start or (MySQL, which prints its
+  own path first) anywhere; PostgreSQL prints `MAJOR.MINOR`, its index
+  versions have a patch number of `0`.
+- Archives: `.tar.gz`, `.tar.xz` (liblzma, built from source and linked
+  statically) and `.zip`. Hard links of tar archives are recreated as
+  independent copies of a regular file the same extraction created
+  before them; anything else (later entries, links, directories, paths
+  outside) is refused.
+
+### Services
+
+- `devspace_core::service`: `ServiceName` (`mysql`, `postgresql`, also
+  their package names), `Series` (PostgreSQL `MAJOR`, MySQL
+  `MAJOR.MINOR`), `InstanceKey` (service + series). An instance runs the
+  newest installed version of its series.
+- Plan (`service::plan`, pure): an instance runs when a registered project
+  requires it (`[services]`, resolved to the newest installed version
+  matching the requirement, hence to its series) or the user started it,
+  unless the user stopped it, and only if a version is installed. All the
+  series of a service share its port: only one runs, the one started by
+  the user, otherwise the newest; the others report why. Unsatisfied
+  requirements are listed with the command to run.
+- Choices (`services` table): `service start` stores `started`, unless the
+  projects already require the instance (then nothing is stored);
+  `service stop` stores `stopped` if projects require it, otherwise
+  removes the row. Starting a series clears `started` on the other series
+  of the service.
+- Layout (`ServiceLayout`): data in `<data>/services/<name>/<series>/`,
+  initialised in `.init-<series>` next to it and renamed once the tool
+  succeeded (a data directory that exists is initialised); sockets in
+  `<run>/services/<name>-<series>/` (private directory), pid files
+  `<run>/services/<name>-<series>.pid`, output in
+  `<logs>/<name>-<series>.log`.
+- Command lines (`service::process`): every setting on the command line.
+  PostgreSQL: `initdb --auth=trust --username=postgres --encoding=UTF8
+  --no-locale`, then `postgres -D … -h <address> -p <port> -k <sockets>
+  -c hba_file=<sockets>/pg_hba.conf`, a file DevSpace rewrites at every
+  start (socket and `127.0.0.0/8`, trust; `initdb` only trusts
+  `127.0.0.1`).
+  MySQL: `--no-defaults` first (no option file of the machine or the user
+  is read), `--initialize-insecure` with an init file creating
+  `root@'127.%'` (TCP clients come from a loopback address,
+  `--skip-name-resolve`), then `mysqld` with `--bind-address`, `--port`,
+  `--socket`, `--mysqlx=OFF`, `--secure-file-priv=NULL`.
+- Supervision (`devspaced::services`): `Services::sync` stops the servers
+  not in the plan or running another version, then starts the missing
+  ones: port check on the sites address (unconfigured address → hint to
+  run `system setup`; busy port → setting to change), initialisation on a
+  blocking thread (5 min limit), start, readiness by a failing bind of the
+  port (60 s). Stop: `SIGINT` (PostgreSQL fast shutdown) or `SIGTERM`
+  (MySQL), kill after 30 s. The plan is applied at startup and after every
+  change of the projects, of the installed service versions and of the
+  choices; a removed version is stopped first. Orphans are stopped at
+  startup when their pid file designates a server program of an installed
+  version of the series.
 
 ### Daemon lifecycle
 
@@ -393,3 +458,11 @@ each block having a `SAFETY:` comment.
 | 36 | 2026-11-26 | One PHP-FPM master per PHP version in use, on a Unix socket of the private runtime directory, restarted with the sites. | Several versions side by side without TCP ports reachable by other local users; Caddy runs as the same user. Not available on Windows (no PHP-FPM). |
 | 37 | 2026-11-26 | A runtime the manifest does not mention resolves to the newest installed version. | PHP projects registered before M4 work without editing their manifest; `[runtimes]` pins versions for reproducibility. |
 | 38 | 2026-11-26 | Child process supervision extracted to `devspaced::process`, shared by Caddy and PHP-FPM. | One implementation of monitor, graceful stop and crash recovery. |
+| 39 | 2026-11-26 | M5 services: PostgreSQL and MySQL; Redis/Valkey postponed to M7. | Approved by the user: both publish relocatable binaries; Redis and Valkey publish none for macOS and Windows, so they need a DevSpace build and a hosting. |
+| 40 | 2026-11-26 | Service programs are packages of the signed index (`postgresql`, `mysql`), installed by the runtime installer. | One verified installation path; `devspace service install` is the same request as `runtime install`. |
+| 41 | 2026-11-26 | Instances shared by every project, one per service and series, started on demand. | Approved by the user (Herd's model); a series shares the on-disk format, so patch upgrades reuse the data, major upgrades get a new directory. |
+| 42 | 2026-11-26 | Services on the sites address with their standard ports (`127.0.0.2:5432`, `:3306`). | Approved by the user: `.env` files keep the usual ports, and Herd's services on `127.0.0.1` are not disturbed; requires the loopback alias of `system setup` (a clear hint otherwise). |
+| 43 | 2026-11-26 | Administrators without a password (`postgres` trust, MySQL `root` with an empty password). | Approved by the user (as Herd): development databases on the loopback only; any local user able to reach the loopback address can connect. |
+| 44 | 2026-11-26 | PostgreSQL from theseus-rs/postgresql-binaries, MySQL from cdn.mysql.com. | No official relocatable PostgreSQL build exists for macOS and Linux; theseus-rs publishes SHA-256 and GitHub attestations for every target. Oracle publishes MD5 and GPG only: archives hashed at pin time (MD5 cross-checked), then fixed by the signed index. |
+| 45 | 2026-11-26 | `liblzma` (static) for `.tar.xz`. | MySQL's Linux archives are xz only; the reference implementation, built like the bundled SQLite. |
+| 46 | 2026-11-26 | Hard links of tar archives become copies of an already extracted file. | PostgreSQL's time zone data uses them; a copy never designates anything outside the extraction. |

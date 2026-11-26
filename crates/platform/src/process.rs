@@ -30,17 +30,38 @@ pub fn executable_path(pid: u32) -> io::Result<PathBuf> {
     imp::executable_path(checked_pid(pid)?)
 }
 
+/// How a process is asked to stop gracefully.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StopRequest {
+    /// `SIGTERM` on Unix: the usual request (Caddy, PHP-FPM, MySQL).
+    #[default]
+    Terminate,
+    /// `SIGINT` on Unix: PostgreSQL's "fast" shutdown, which disconnects
+    /// clients instead of waiting for them (`SIGTERM` waits).
+    Interrupt,
+}
+
+/// Asks process `pid` to stop with `SIGTERM` (see [`request_stop_with`]).
+///
+/// # Errors
+///
+/// Fails if the process does not exist or cannot be signalled.
+pub fn request_stop(pid: u32) -> io::Result<()> {
+    request_stop_with(pid, StopRequest::Terminate)
+}
+
 /// Asks process `pid` to stop.
 ///
-/// - Unix: sends `SIGTERM`, which lets the process shut down gracefully.
+/// - Unix: sends the signal of `request`, which lets the process shut down
+///   gracefully.
 /// - Windows: terminates the process immediately (there is no portable
 ///   graceful request for console-less processes).
 ///
 /// # Errors
 ///
 /// Fails if the process does not exist or cannot be signalled.
-pub fn request_stop(pid: u32) -> io::Result<()> {
-    imp::request_stop(checked_pid(pid)?)
+pub fn request_stop_with(pid: u32, request: StopRequest) -> io::Result<()> {
+    imp::request_stop(checked_pid(pid)?, request)
 }
 
 /// Kills process `pid` immediately (`SIGKILL` on Unix, `TerminateProcess`
@@ -118,8 +139,12 @@ mod imp {
         ))
     }
 
-    pub(super) fn request_stop(pid: u32) -> io::Result<()> {
-        signal(pid, libc::SIGTERM)
+    pub(super) fn request_stop(pid: u32, request: super::StopRequest) -> io::Result<()> {
+        let signal_number = match request {
+            super::StopRequest::Terminate => libc::SIGTERM,
+            super::StopRequest::Interrupt => libc::SIGINT,
+        };
+        signal(pid, signal_number)
     }
 
     pub(super) fn kill(pid: u32) -> io::Result<()> {
@@ -204,7 +229,7 @@ mod imp {
         Ok(PathBuf::from(std::ffi::OsString::from_wide(&buffer)))
     }
 
-    pub(super) fn request_stop(pid: u32) -> io::Result<()> {
+    pub(super) fn request_stop(pid: u32, _request: super::StopRequest) -> io::Result<()> {
         kill(pid)
     }
 

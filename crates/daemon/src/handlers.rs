@@ -8,6 +8,7 @@ use devspace_core::db::Database;
 use devspace_core::error::report;
 use devspace_core::project::{Project, ProjectName};
 use devspace_core::runtime::InstalledRuntime;
+use devspace_core::service::{InstanceKey, ServiceMode};
 use devspace_core::web::site::{self, Runtimes as SiteRuntimes, Site, SiteTarget};
 use devspace_core::web::{ca, release};
 use devspace_ipc::{
@@ -20,6 +21,7 @@ use devspace_platform::system::port_forwarding::Forwarding;
 use devspace_platform::system::{IntegrationState, port_forwarding, resolver, trust_store};
 
 use crate::runtimes::{self, Runtimes};
+use crate::services::{self, Services};
 use crate::web::{WebError, WebServer};
 
 /// State shared by all connections.
@@ -31,17 +33,24 @@ pub(crate) struct DaemonState {
     db: Mutex<Database>,
     pub(crate) web: WebServer,
     pub(crate) runtimes: Runtimes,
+    pub(crate) services: Services,
     dns: Mutex<DnsServerState>,
 }
 
 impl DaemonState {
-    pub(crate) fn new(db: Database, web: WebServer, runtimes: Runtimes) -> Self {
+    pub(crate) fn new(
+        db: Database,
+        web: WebServer,
+        runtimes: Runtimes,
+        services: Services,
+    ) -> Self {
         Self {
             started: Instant::now(),
             pid: std::process::id(),
             db: Mutex::new(db),
             web,
             runtimes,
+            services,
             dns: Mutex::new(DnsServerState::Failed {
                 message: "not started".to_owned(),
             }),
@@ -83,6 +92,24 @@ impl DaemonState {
             .list_projects()
             .map_err(|err| error_response(&err))
     }
+
+    /// Choices of the user for the service instances (blocking).
+    pub(crate) fn service_modes(&self) -> Result<Vec<(InstanceKey, ServiceMode)>, Response> {
+        self.db()?
+            .service_modes()
+            .map_err(|err| error_response(&err))
+    }
+
+    /// Records a choice of the user for a service instance (blocking).
+    pub(crate) fn set_service_mode(
+        &self,
+        key: InstanceKey,
+        mode: Option<ServiceMode>,
+    ) -> Result<(), Response> {
+        self.db()?
+            .set_service_mode(key, mode)
+            .map_err(|err| error_response(&err))
+    }
 }
 
 /// Computes the response to `request`. [`Request::Shutdown`] is only
@@ -98,6 +125,7 @@ pub(crate) async fn handle(request: Request, state: &Arc<DaemonState>) -> Respon
                 blocking(state, move |state| handle_project_request(request, state)).await;
             if modifies && !matches!(response, Response::Error(_)) {
                 reload_in_background(state);
+                services::apply_in_background(state);
             }
             response
         }
@@ -123,6 +151,13 @@ pub(crate) async fn handle(request: Request, state: &Arc<DaemonState>) -> Respon
         }
         Request::RuntimeRemove { name, version } => runtimes::remove(state, &name, &version).await,
         Request::RuntimeEnv { directory } => runtimes::env(state, directory).await,
+        Request::ServiceList => services::list(state).await,
+        Request::ServiceStart { name, series } => {
+            services::set(state, &name, series.as_deref(), true).await
+        }
+        Request::ServiceStop { name, series } => {
+            services::set(state, &name, series.as_deref(), false).await
+        }
     }
 }
 
@@ -388,7 +423,8 @@ pub(crate) fn error_response(err: &devspace_core::Error) -> Response {
         | E::ChecksumMismatch { .. }
         | E::Archive { .. }
         | E::InstallFile { .. }
-        | E::RuntimeCheck { .. } => ErrorCode::Failed,
+        | E::RuntimeCheck { .. }
+        | E::ServiceInit { .. } => ErrorCode::Failed,
         _ => ErrorCode::Internal,
     };
     let message = report(err);

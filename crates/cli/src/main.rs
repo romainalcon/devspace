@@ -1,9 +1,9 @@
 //! `devspace` command-line interface.
 //!
 //! Local commands (`paths`, `config`) work without the daemon; `daemon`
-//! commands manage the daemon lifecycle, `project`, `web`, `runtime` and
-//! `exec` commands use the registry, web server and runtimes owned by the
-//! daemon, through the IPC protocol. `system` commands install the machine-wide integrations
+//! commands manage the daemon lifecycle, `project`, `web`, `runtime`,
+//! `service` and `exec` commands use the registry, web server, runtimes and
+//! services owned by the daemon, through the IPC protocol. `system` commands install the machine-wide integrations
 //! through the privileged helper, after approval.
 
 mod client;
@@ -11,6 +11,7 @@ mod daemon;
 mod error;
 mod project;
 mod runtime;
+mod service;
 mod system;
 mod web;
 
@@ -25,6 +26,7 @@ use crate::daemon::DaemonCommand;
 use crate::error::CliError;
 use crate::project::ProjectCommand;
 use crate::runtime::RuntimeCommand;
+use crate::service::ServiceCommand;
 use crate::system::SystemCommand;
 use crate::web::WebCommand;
 
@@ -56,12 +58,17 @@ enum Command {
     /// daemon).
     #[command(subcommand)]
     Web(WebCommand),
-    /// Install, list or remove runtime versions (PHP, Node.js; requires the
-    /// daemon).
+    /// Install, list or remove runtime versions (PHP, Node.js, and the
+    /// programs of the services; requires the daemon).
     #[command(subcommand)]
     Runtime(RuntimeCommand),
+    /// Install, start, stop or list the services (MySQL, PostgreSQL;
+    /// requires the daemon).
+    #[command(subcommand)]
+    Service(ServiceCommand),
     /// Run a command with the runtime versions of the current project
-    /// first in PATH, e.g. `devspace exec -- php artisan migrate`.
+    /// first in PATH and the database clients pointed at its services,
+    /// e.g. `devspace exec -- php artisan migrate`.
     Exec {
         /// Command and its arguments.
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
@@ -128,6 +135,7 @@ fn run(cli: Cli) -> Result<ExitCode, CliError> {
         Command::Web(command) => return web::execute(command, &paths),
         Command::System(command) => return system::execute(command, &paths),
         Command::Runtime(command) => return runtime::execute(command, &paths),
+        Command::Service(command) => return service::execute(command, &paths),
         Command::Exec { command } => return runtime::exec(&command, &paths),
     }
     Ok(ExitCode::SUCCESS)

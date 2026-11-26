@@ -14,12 +14,16 @@
 //!   relative and stay lexically inside the destination; once all links
 //!   exist, each one is resolved and must lead to an existing path inside
 //!   the destination, which also rules out chains of links escaping it;
-//! - hard links, devices, FIFOs and other entry types are refused;
+//! - hard links (tar only) must designate a regular file extracted before
+//!   them by the same archive; they become independent copies of it, so
+//!   their target is never looked up outside the files of this extraction;
+//! - devices, FIFOs and other entry types are refused;
 //! - the total size and number of entries are limited ([`TreeLimits`]).
 //!
 //! The destination is expected to be a fresh directory that nothing uses
 //! yet: on error the caller discards it.
 
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -51,7 +55,7 @@ impl Default for TreeLimits {
 /// What [`extract_tree`] created.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TreeStats {
-    /// Regular files.
+    /// Regular files, including copies of hard links.
     pub files: usize,
     /// Symbolic links.
     pub links: usize,
@@ -72,6 +76,7 @@ enum EntryKind {
     Directory,
     File { executable: bool },
     Symlink { target: String },
+    HardLink { target: String },
     Other,
 }
 
@@ -100,42 +105,14 @@ pub fn extract_tree(
         entries: 0,
         stats: TreeStats::default(),
         links: Vec::new(),
+        files: HashMap::new(),
     };
     let file = File::open(archive).map_err(ArchiveError::Read)?;
     match kind {
         ArchiveKind::TarGz => {
-            let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
-            for item in tar.entries().map_err(ArchiveError::Read)? {
-                let item = item.map_err(ArchiveError::Read)?;
-                let name = text(&item.path_bytes())?;
-                let header = item.header();
-                let entry_type = header.entry_type();
-                let kind = if entry_type.is_dir() {
-                    EntryKind::Directory
-                } else if entry_type.is_file() {
-                    let mode = header.mode().map_err(ArchiveError::Read)?;
-                    EntryKind::File {
-                        executable: mode & 0o111 != 0,
-                    }
-                } else if entry_type.is_symlink() {
-                    let target = item
-                        .link_name_bytes()
-                        .ok_or_else(|| ArchiveError::UnsupportedEntry(name.clone()))?;
-                    EntryKind::Symlink {
-                        target: text(&target)?,
-                    }
-                } else if matches!(
-                    entry_type,
-                    tar::EntryType::XGlobalHeader | tar::EntryType::XHeader
-                ) {
-                    // Metadata records (pax headers), not files.
-                    continue;
-                } else {
-                    EntryKind::Other
-                };
-                extractor.entry(&name, kind, item)?;
-            }
+            extract_tar(flate2::read::GzDecoder::new(file), &mut extractor)?;
         }
+        ArchiveKind::TarXz => extract_tar(super::xz_decoder(file), &mut extractor)?,
         ArchiveKind::Zip => {
             let mut zip = zip::ZipArchive::new(file).map_err(ArchiveError::Zip)?;
             for index in 0..zip.len() {
@@ -161,6 +138,48 @@ pub fn extract_tree(
     extractor.finish()
 }
 
+/// Feeds every entry of a tar stream to `extractor`.
+fn extract_tar(reader: impl Read, extractor: &mut Extractor) -> Result<(), ArchiveError> {
+    let mut tar = tar::Archive::new(reader);
+    for item in tar.entries().map_err(ArchiveError::Read)? {
+        let item = item.map_err(ArchiveError::Read)?;
+        let name = text(&item.path_bytes())?;
+        let header = item.header();
+        let entry_type = header.entry_type();
+        let link_target = || {
+            item.link_name_bytes()
+                .ok_or_else(|| ArchiveError::UnsupportedEntry(name.clone()))
+                .and_then(|target| text(&target))
+        };
+        let kind = if entry_type.is_dir() {
+            EntryKind::Directory
+        } else if entry_type.is_file() {
+            let mode = header.mode().map_err(ArchiveError::Read)?;
+            EntryKind::File {
+                executable: mode & 0o111 != 0,
+            }
+        } else if entry_type.is_symlink() {
+            EntryKind::Symlink {
+                target: link_target()?,
+            }
+        } else if entry_type.is_hard_link() {
+            EntryKind::HardLink {
+                target: link_target()?,
+            }
+        } else if matches!(
+            entry_type,
+            tar::EntryType::XGlobalHeader | tar::EntryType::XHeader
+        ) {
+            // Metadata records (pax headers), not files.
+            continue;
+        } else {
+            EntryKind::Other
+        };
+        extractor.entry(&name, kind, item)?;
+    }
+    Ok(())
+}
+
 struct Extractor {
     root: PathBuf,
     strip_components: usize,
@@ -168,6 +187,9 @@ struct Extractor {
     entries: usize,
     stats: TreeStats,
     links: Vec<PendingLink>,
+    /// Regular files created so far, with their executable bit: the only
+    /// possible targets of hard links.
+    files: HashMap<PathBuf, bool>,
 }
 
 impl Extractor {
@@ -186,9 +208,7 @@ impl Extractor {
         if relative.is_empty() {
             return Ok(());
         }
-        let path = relative
-            .iter()
-            .fold(self.root.clone(), |path, component| path.join(component));
+        let path = self.path_of(relative);
         match kind {
             EntryKind::Directory => create_dirs(&path),
             EntryKind::File { executable } => {
@@ -207,8 +227,45 @@ impl Extractor {
                 });
                 Ok(())
             }
+            EntryKind::HardLink { target } => self.copy_hard_link(name, &path, &target),
             EntryKind::Other => Err(ArchiveError::UnsupportedEntry(name.to_owned())),
         }
+    }
+
+    fn path_of(&self, relative: &[&str]) -> PathBuf {
+        relative
+            .iter()
+            .fold(self.root.clone(), |path, component| path.join(component))
+    }
+
+    /// Creates the hard link `name` at `path` as a copy of `target`, an
+    /// entry name of the archive designating a regular file already
+    /// extracted.
+    fn copy_hard_link(
+        &mut self,
+        name: &str,
+        path: &Path,
+        target: &str,
+    ) -> Result<(), ArchiveError> {
+        let unsafe_link = || ArchiveError::UnsafeHardLink {
+            link: name.to_owned(),
+            target: target.to_owned(),
+        };
+        let components = safe_components(target).map_err(|_| unsafe_link())?;
+        let source = components
+            .get(self.strip_components..)
+            .filter(|relative| !relative.is_empty())
+            .map(|relative| self.path_of(relative))
+            .ok_or_else(unsafe_link)?;
+        let executable = *self.files.get(&source).ok_or_else(unsafe_link)?;
+        if let Some(parent) = path.parent() {
+            create_dirs(parent)?;
+        }
+        let data = File::open(&source).map_err(|source_err| ArchiveError::Create {
+            path: source.clone(),
+            source: source_err,
+        })?;
+        self.write_file(name, path, executable, data)
     }
 
     fn write_file(
@@ -249,6 +306,7 @@ impl Extractor {
         })?;
         self.stats.files += 1;
         self.stats.bytes += copied;
+        self.files.insert(path.to_path_buf(), executable);
         Ok(())
     }
 
@@ -546,16 +604,121 @@ mod tests {
     }
 
     #[test]
-    fn hard_links_duplicates_and_limits_are_refused() {
-        let (_tmp, result) = extract(
+    fn hard_links_become_copies_of_extracted_files() {
+        let (tmp, result) = extract(
             &[
-                Item::File("pkg/a", b"x", 0o644),
-                Item::HardLink("pkg/b", "pkg/a"),
+                Item::File("pkg/zone/Greenwich", b"tzdata", 0o644),
+                Item::File("pkg/bin/tool", b"exe", 0o755),
+                Item::HardLink("pkg/zone/GMT", "pkg/zone/Greenwich"),
+                Item::HardLink("pkg/other/tool", "./pkg/bin/tool"),
             ],
             1,
         );
-        assert!(matches!(result, Err(ArchiveError::UnsupportedEntry(_))));
+        let stats = result.unwrap();
+        assert_eq!(stats.files, 4);
+        assert_eq!(stats.bytes, 18);
+        let dest = tmp.path().join("dest");
+        assert_eq!(fs::read(dest.join("zone/GMT")).unwrap(), b"tzdata");
+        // An independent copy: changing it leaves the original intact.
+        fs::write(dest.join("zone/GMT"), b"changed").unwrap();
+        assert_eq!(fs::read(dest.join("zone/Greenwich")).unwrap(), b"tzdata");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = fs::metadata(dest.join("other/tool"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o755);
+        }
+    }
 
+    #[test]
+    fn hard_links_outside_the_extracted_files_are_refused() {
+        for (link, target) in [
+            // Not extracted (yet): later entries, absent, or stripped.
+            ("pkg/b", "pkg/a"),
+            ("pkg/b", "pkg"),
+            // Outside the destination.
+            ("pkg/b", "/etc/passwd"),
+            ("pkg/b", "pkg/../../etc/passwd"),
+            ("pkg/b", "../outside"),
+            // A directory, not a file.
+            ("pkg/b", "pkg/dir"),
+        ] {
+            let (tmp, result) = extract(
+                &[
+                    Item::Dir("pkg/dir/"),
+                    Item::HardLink(link, target),
+                    Item::File("pkg/a", b"x", 0o644),
+                ],
+                1,
+            );
+            assert!(
+                matches!(result, Err(ArchiveError::UnsafeHardLink { .. })),
+                "{link} -> {target}: {result:?}"
+            );
+            assert!(!tmp.path().join("dest/b").exists());
+        }
+        // A hard link to a symbolic link of the archive is refused too.
+        let (_tmp, result) = extract(
+            &[
+                Item::File("pkg/a", b"x", 0o644),
+                Item::Link("pkg/l", "a"),
+                Item::HardLink("pkg/b", "pkg/l"),
+            ],
+            1,
+        );
+        assert!(
+            matches!(result, Err(ArchiveError::UnsafeHardLink { .. })),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn tar_xz_trees_are_extracted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tar_path = tmp.path().join("plain.tar");
+        {
+            let mut builder = tar::Builder::new(File::create(&tar_path).unwrap());
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(0o755);
+            header.set_size(6);
+            builder
+                .append_data(&mut header, "mysql-1/bin/mysqld", &b"server"[..])
+                .unwrap();
+            builder.into_inner().unwrap();
+        }
+        let archive = tmp.path().join("mysql.tar.xz");
+        let mut encoder = liblzma::write::XzEncoder::new(File::create(&archive).unwrap(), 1);
+        io::copy(&mut File::open(&tar_path).unwrap(), &mut encoder).unwrap();
+        encoder.finish().unwrap();
+        let dest = tmp.path().join("dest");
+        fs::create_dir(&dest).unwrap();
+        let stats = extract_tree(
+            &archive,
+            ArchiveKind::TarXz,
+            &dest,
+            1,
+            TreeLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(stats.files, 1);
+        assert_eq!(fs::read(dest.join("bin/mysqld")).unwrap(), b"server");
+
+        // Gzip data announced as xz.
+        let wrong = tmp.path().join("wrong.tar.xz");
+        tar_gz(&wrong, &[Item::File("a", b"x", 0o644)]);
+        let dest = tmp.path().join("dest-wrong");
+        fs::create_dir(&dest).unwrap();
+        assert!(matches!(
+            extract_tree(&wrong, ArchiveKind::TarXz, &dest, 0, TreeLimits::default()),
+            Err(ArchiveError::Read(_))
+        ));
+    }
+
+    #[test]
+    fn duplicates_and_limits_are_refused() {
         let (_tmp, result) = extract(
             &[
                 Item::File("pkg/a", b"x", 0o644),

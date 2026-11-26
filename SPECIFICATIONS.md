@@ -30,9 +30,8 @@ binaries and **without requiring Docker**.
 
 ## Functional requirements
 
-Requirements are tagged with the milestone delivering them. M0 to M3
-items are implemented today; M4 items are implemented and awaiting
-validation.
+Requirements are tagged with the milestone delivering them. M0 to M4
+items are implemented and validated, as are M5 items.
 
 ### Implemented (M0)
 
@@ -87,7 +86,7 @@ validation.
 | F-3.8 | System files that exist without the DevSpace marker are never modified or removed; `system setup` then stops before any change and explains the conflict. |
 | F-3.9 | Web and system commands require the daemon (F-2.7). Starting the web server before installing it fails with a hint to run `devspace web install`. |
 
-### Implemented (M4, awaiting validation)
+### Implemented (M4)
 
 | ID | Requirement |
 |---|---|
@@ -101,13 +100,29 @@ validation.
 | F-4.8 | `devspace exec -- COMMAND [ARGS…]` runs a command with the runtime versions of the registered project containing the current directory (newest installed versions elsewhere) first in `PATH`, the DevSpace `php.ini` for PHP, and returns its exit code; unmet requirements are reported as warnings. |
 | F-4.9 | Runtime commands require the daemon (F-2.7). |
 
+### Implemented (M5)
+
+| ID | Requirement |
+|---|---|
+| F-5.1 | The package index also publishes the programs of the services: `postgresql` (17, 18, 19) and `mysql` (8.4, 9.7 LTS; not for macOS x86_64 and Linux ARM64). `devspace service install NAME [VERSION]` installs them like `runtime install` (F-4.3); versions may have a fourth number (`8.4.13.1`). |
+| F-5.2 | An instance is a service and a series (PostgreSQL `MAJOR`, MySQL `MAJOR.MINOR`); it runs the newest installed version of its series and keeps its data in `<data>/services/<name>/<series>/`, shared by every project. |
+| F-5.3 | `[services]` in `devspace.toml` (`postgresql = "18"`, `mysql = "8.4"`) makes the daemon run the instance of the newest installed matching version while the project is registered; unmet requirements are listed by `service list` with the command to run. |
+| F-5.4 | `devspace service start NAME [SERIES]` runs an instance even if no project requires it; `devspace service stop NAME [SERIES]` stops it even if projects require it. Both are remembered across daemon restarts; starting again returns to the projects' choice. Without `SERIES`, `start` uses the newest installed series and `stop` every series. |
+| F-5.5 | Only one series of a service runs at a time (they share its port): the one started by the user, otherwise the newest; the others report why. |
+| F-5.6 | The first start creates the data directory atomically; failures are reported with the end of the log `<logs>/<name>-<series>.log` and leave no data directory. |
+| F-5.7 | Servers run as the current user and listen only on `web.address` (`127.0.0.2` by default) on `services.postgresql_port` (5432) and `services.mysql_port` (3306), and on Unix sockets in the private runtime directory. The administrators (`postgres`, MySQL `root`) have no password. An unconfigured address or a busy port is reported with what to do. |
+| F-5.8 | `devspace service list` prints every instance: version, state, port, user, why it runs or not (projects, choice of the user, conflict), failures. |
+| F-5.9 | `devspace exec` (F-4.8) also puts the client programs of the services first in `PATH` and sets `PGHOST`, `PGPORT`, `PGUSER`, `MYSQL_HOST` and `MYSQL_TCP_PORT`. |
+| F-5.10 | Removing a service version stops its instance first; the daemon stops every server when it stops, and stops those left by a crashed daemon at startup. |
+| F-5.11 | Service commands require the daemon (F-2.7). |
+
 ### Planned
 
 | ID | Milestone | Requirement |
 |---|---|---|
 | F-3.10 | M3+ | System integrations on Linux and Windows. |
 | F-4.10 | M4+ | PHP sites on Windows; remote index updates (M7). |
-| F-5 | M5 | Services (MySQL/MariaDB, PostgreSQL, Redis, …) supervised by the daemon. |
+| F-5.12 | M7 | Redis/Valkey (needs DevSpace builds and a hosting); MySQL on macOS x86_64 and Linux ARM64; graceful stop of the servers on Windows. |
 | F-6 | M6 | Desktop application on top of the IPC API. |
 
 ## Configuration reference (schema version 1)
@@ -125,6 +140,10 @@ address = "127.0.0.2"     # loopback address of the sites (127.0.0.0/8)
 http_port = 47080         # web server on that address, at least 1024
 https_port = 47443        # must differ from http_port
 dns_port = 47053          # DNS server on 127.0.0.1 for *.<tld> (UDP), at least 1024
+
+[services]                # on web.address; at least 1024, distinct, not the web ports
+mysql_port = 3306
+postgresql_port = 5432
 ```
 
 Rules: all keys optional, unknown keys rejected, file never overwritten by
@@ -152,18 +171,24 @@ proxy = "127.0.0.1:3000"  # or a development server: 127.0.0.1, [::1] or localho
 [runtimes]                # optional; MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH
 php = "8.4"               # newest installed match; newest installed if absent
 node = "24"
+
+[services]                # optional; the daemon runs these while the project is registered
+postgresql = "18"         # the series of the newest installed match
+mysql = "8.4"
 ```
 
 Rules: all keys optional, unknown keys rejected, file only read by DevSpace
 (never written, nothing in it is executed). `project.name` is read when
 the project is added; `[web]` and `[runtimes]` whenever the web server
-(re)starts, and `[runtimes]` at every `devspace exec`.
+(re)starts, `[runtimes]` and `[services]` at every `devspace exec`, and
+`[services]` whenever the services are re-planned (daemon start, project,
+installation or choice changes).
 
 Project names: 1–63 characters among lowercase ASCII letters, digits and
 `-`, not starting or ending with `-` (a DNS label, for the `*.<tld>`
 domains of M3).
 
-## IPC protocol reference (version 4)
+## IPC protocol reference (version 5)
 
 Frames: 4-byte big-endian payload length, then a UTF-8 JSON object; payloads
 over 1 MiB are rejected. Every message carries a `type` tag.
@@ -189,6 +214,15 @@ over 1 MiB are rejected. Every message carries a `type` tag.
 | `runtime_install` with `name`, optional `version` (requirement) | `runtime_installed` with `name`, `version`, `path`, `changed` (`false`: already installed) |
 | `runtime_remove` with `name`, `version` (exact) | `runtime_removed` with the same fields |
 | `runtime_env` with `directory` (absolute) | `runtime_env` with `project` (or `null`), `runtimes: [{name, version, bin_dirs, variables: [[name, value]]}]`, `missing: [message]` |
+| `service_list` | `services` (below) |
+| `service_start` with `name`, optional `series` | `services` |
+| `service_stop` with `name`, optional `series` | `services` |
+
+`services` fields: `address`, `instances` (`[{name, series, version,
+port, user, mode, required_by, state, blocked, data_dir, log_file}]`,
+`version` and `blocked` possibly `null`, `mode`
+`automatic|started|stopped`, `state` shaped like `server` below),
+`missing` (`[message]`).
 
 `web_status` fields: `caddy_version`, `caddy_installed`, `tld`,
 `address`, `server`
@@ -210,7 +244,8 @@ minutes; clients use a longer timeout for them.
 
 Version history: 1 (M1) `ping`, `status`, `shutdown`; 2 (M2) project
 requests and `error` responses; 3 (M3) web requests, `unavailable` and
-`failed` codes; 4 (M4) runtime requests, PHP sites and PHP-FPM states.
+`failed` codes; 4 (M4) runtime requests, PHP sites and PHP-FPM states;
+5 (M5) service requests.
 
 ## Privileged helper reference
 
@@ -261,7 +296,11 @@ No platform-specific command or path may be assumed outside
   links leaving the installation (M4).
 - PHP-FPM listens on a Unix socket readable by the user only, never on a
   TCP port (M4).
-- Services listen on loopback only by default.
+- Services listen on the loopback sites address only, and on Unix sockets
+  in the private runtime directory; MySQL reads no option file and
+  disables file import/export (`secure_file_priv`). Their administrators
+  have no password: any local user can connect through the loopback
+  address (M5).
 - Secrets and credentials are never logged.
 - Untrusted project commands are never executed without explicit approval.
 - Existing system configuration is never overwritten without approval.

@@ -450,3 +450,138 @@ async fn runtimes_are_listed_and_selected_per_project() {
     );
     stop_daemon(child, client).await;
 }
+
+#[tokio::test]
+async fn services_follow_project_requirements() {
+    let home = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let blog = workspace.path().join("blog");
+    std::fs::create_dir_all(&blog).unwrap();
+    std::fs::write(
+        blog.join("devspace.toml"),
+        "[services]\npostgresql = \"18\"\nmysql = \"8.4\"\n",
+    )
+    .unwrap();
+    let blog = devspace_platform::fs::canonicalize(&blog).unwrap();
+
+    let (child, mut client) = start_daemon(home.path()).await;
+    let _guard = KillOnPanic(child.id());
+
+    // The service packages are published in the index like the runtimes.
+    let Response::Runtimes(list) = client.request(Request::RuntimeList).await.unwrap() else {
+        panic!("expected the runtime list");
+    };
+    assert!(
+        list.versions
+            .iter()
+            .any(|v| v.name == "postgresql" && v.available),
+        "{list:?}"
+    );
+
+    let Response::Services(services) = client.request(Request::ServiceList).await.unwrap() else {
+        panic!("expected the service list");
+    };
+    assert!(services.instances.is_empty());
+    assert!(services.missing.is_empty());
+
+    client
+        .request(Request::ProjectAdd {
+            path: blog.clone(),
+            name: None,
+        })
+        .await
+        .unwrap();
+    // Nothing is installed: the required instances are listed with the
+    // command to run, nothing runs.
+    let Response::Services(services) = client.request(Request::ServiceList).await.unwrap() else {
+        panic!("expected the service list");
+    };
+    assert_eq!(services.address, "127.0.0.2");
+    assert!(services.missing.is_empty(), "{:?}", services.missing);
+    assert_eq!(services.instances.len(), 2, "{services:?}");
+    for instance in &services.instances {
+        assert_eq!(instance.required_by, ["blog"]);
+        assert_eq!(instance.version, None);
+        assert_eq!(instance.state, devspace_ipc::WebServerState::Stopped);
+        let blocked = instance.blocked.as_deref().unwrap();
+        assert!(
+            blocked.contains(&format!(
+                "devspace service install {} {}",
+                instance.name, instance.series
+            )),
+            "{blocked}"
+        );
+    }
+    let Response::RuntimeEnv(env) = client
+        .request(Request::RuntimeEnv {
+            directory: blog.clone(),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("expected a runtime environment");
+    };
+    assert!(
+        env.missing
+            .iter()
+            .any(|m| m.contains("devspace service install mysql 8.4")),
+        "{:?}",
+        env.missing
+    );
+
+    // Starting needs an installed version; invalid names and series are
+    // refused.
+    for (request, code) in [
+        (
+            Request::ServiceStart {
+                name: "postgresql".into(),
+                series: None,
+            },
+            ErrorCode::NotFound,
+        ),
+        (
+            Request::ServiceStart {
+                name: "mysql".into(),
+                series: Some("8.4".into()),
+            },
+            ErrorCode::NotFound,
+        ),
+        (
+            Request::ServiceStart {
+                name: "redis".into(),
+                series: None,
+            },
+            ErrorCode::InvalidRequest,
+        ),
+        (
+            Request::ServiceStop {
+                name: "mysql".into(),
+                series: Some("8".into()),
+            },
+            ErrorCode::InvalidRequest,
+        ),
+    ] {
+        assert_eq!(error_code(client.request(request).await.unwrap()), code);
+    }
+
+    // Stopping a required instance is remembered, even without
+    // installation.
+    let Response::Services(services) = client
+        .request(Request::ServiceStop {
+            name: "postgresql".into(),
+            series: Some("18".into()),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("expected the service list");
+    };
+    let pg = services
+        .instances
+        .iter()
+        .find(|i| i.name == "postgresql")
+        .unwrap();
+    assert_eq!(pg.mode, devspace_ipc::ServiceMode::Stopped);
+    assert_eq!(pg.version, None);
+    stop_daemon(child, client).await;
+}

@@ -1,4 +1,5 @@
-//! Runtime package manager: PHP and Node.js, several versions side by side.
+//! Package manager: language runtimes (PHP, Node.js) and the programs of
+//! the services (MySQL, PostgreSQL), several versions side by side.
 //!
 //! - [`index`]: the signed package index embedded in DevSpace, listing the
 //!   archives of every runtime version per platform with their checksums;
@@ -29,39 +30,55 @@ use crate::AppPaths;
 /// File describing an installation, inside its directory.
 pub const RECEIPT_FILE_NAME: &str = "devspace-runtime.json";
 
-/// A runtime DevSpace can install.
+/// A package DevSpace can install: a language runtime, or the programs
+/// of a service (server, initialisation tool and clients).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RuntimeName {
+    /// MySQL Community Server (service).
+    Mysql,
     /// Node.js.
     Node,
     /// PHP (command line and FastCGI process manager).
     Php,
+    /// PostgreSQL (service).
+    Postgresql,
 }
 
 impl RuntimeName {
-    /// Every runtime, in display order.
-    pub const ALL: [Self; 2] = [Self::Node, Self::Php];
+    /// Every package, in display order.
+    pub const ALL: [Self; 4] = [Self::Mysql, Self::Node, Self::Php, Self::Postgresql];
 
     /// Lowercase name, as used in manifests, paths and commands.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Mysql => "mysql",
             Self::Node => "node",
             Self::Php => "php",
+            Self::Postgresql => "postgresql",
         }
     }
 
-    /// Parses a runtime name.
+    /// Whether the package provides a service run by the daemon
+    /// ([`crate::service`]).
+    #[must_use]
+    pub const fn is_service(self) -> bool {
+        matches!(self, Self::Mysql | Self::Postgresql)
+    }
+
+    /// Parses a package name.
     ///
     /// # Errors
     ///
-    /// Returns a description listing the known runtimes.
+    /// Returns a description listing the known packages.
     pub fn parse(text: &str) -> Result<Self, String> {
         Self::ALL
             .into_iter()
             .find(|name| name.as_str() == text)
-            .ok_or_else(|| format!("unknown runtime `{text}`; expected `node` or `php`"))
+            .ok_or_else(|| {
+                format!("unknown runtime `{text}`; expected `mysql`, `node`, `php` or `postgresql`")
+            })
     }
 }
 
@@ -71,7 +88,10 @@ impl fmt::Display for RuntimeName {
     }
 }
 
-/// Exact version of a runtime, `MAJOR.MINOR.PATCH`.
+/// Exact version of a package, `MAJOR.MINOR.PATCH`, or
+/// `MAJOR.MINOR.PATCH.BUILD` for the rebuilds some projects publish (MySQL
+/// `8.4.13.1`). A build number is never `0`, so every version has one
+/// spelling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Version {
     /// Major version.
@@ -80,20 +100,36 @@ pub struct Version {
     pub minor: u32,
     /// Patch version.
     pub patch: u32,
+    /// Rebuild of the patch version; `0` when absent.
+    pub build: u32,
 }
 
 impl Version {
-    /// Parses `MAJOR.MINOR.PATCH` (decimal numbers, nothing else).
+    /// A `MAJOR.MINOR.PATCH` version.
+    #[must_use]
+    pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+            build: 0,
+        }
+    }
+
+    /// Parses `MAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH.BUILD` (decimal
+    /// numbers, nothing else; `BUILD` at least 1).
     ///
     /// # Errors
     ///
     /// Returns a description of the expected form.
     pub fn parse(text: &str) -> Result<Self, String> {
         match parse_numbers(text).as_deref() {
-            Some(&[major, minor, patch]) => Ok(Self {
+            Some(&[major, minor, patch]) => Ok(Self::new(major, minor, patch)),
+            Some(&[major, minor, patch, build]) if build > 0 => Ok(Self {
                 major,
                 minor,
                 patch,
+                build,
             }),
             _ => Err(format!(
                 "invalid version `{text}`; expected MAJOR.MINOR.PATCH, such as `8.4.23`"
@@ -104,7 +140,11 @@ impl Version {
 
 impl fmt::Display for Version {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
+        if self.build > 0 {
+            write!(f, ".{}", self.build)?;
+        }
+        Ok(())
     }
 }
 
@@ -137,8 +177,9 @@ impl<'de> Deserialize<'de> for Version {
     }
 }
 
-/// Versions accepted by a project: `MAJOR`, `MAJOR.MINOR` or an exact
-/// `MAJOR.MINOR.PATCH`. The newest matching version is used.
+/// Versions accepted by a project: `MAJOR`, `MAJOR.MINOR` or
+/// `MAJOR.MINOR.PATCH` (which also accepts the rebuilds of that patch
+/// version). The newest matching version is used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VersionReq {
     /// Required major version.
@@ -432,8 +473,20 @@ mod tests {
         assert_eq!(v("8.4.23").to_string(), "8.4.23");
         assert!(v("8.4.9") < v("8.4.23"));
         assert!(v("22.23.5") < v("24.1.0"));
+        assert_eq!(v("8.4.13.1").to_string(), "8.4.13.1");
+        assert!(v("8.4.13") < v("8.4.13.1"));
+        assert!(v("8.4.13.1") < v("8.4.14"));
         for bad in [
-            "", "8", "8.4", "8.4.x", "v8.4.1", "8.4.1.2", "8..1", "+8.4.1", " 8.4.1",
+            "",
+            "8",
+            "8.4",
+            "8.4.x",
+            "v8.4.1",
+            "8.4.1.0",
+            "8.4.1.2.3",
+            "8..1",
+            "+8.4.1",
+            " 8.4.1",
         ] {
             assert!(Version::parse(bad).is_err(), "{bad}");
         }
@@ -447,6 +500,7 @@ mod tests {
         assert!(!req("8.4").matches(v("8.5.8")));
         assert!(req("8.4.23").matches(v("8.4.23")));
         assert!(!req("8.4.23").matches(v("8.4.28")));
+        assert!(req("8.4.13").matches(v("8.4.13.1")));
         assert_eq!(
             req("8.4").best([v("8.4.9"), v("8.4.23"), v("8.5.8")]),
             Some(v("8.4.23"))

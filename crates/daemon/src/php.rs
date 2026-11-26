@@ -19,7 +19,7 @@ use devspace_core::runtime::{self, InstalledRuntime, RuntimeLayout, RuntimeName,
 use devspace_ipc::{PhpPoolInfo, WebServerState};
 use devspace_platform::fs::{FileMode, write_atomic};
 
-use crate::process::{self, ChildInfo, POLL_INTERVAL, SharedState, Supervised};
+use crate::process::{self, ChildInfo, POLL_INTERVAL, SharedState, StopPolicy, Supervised};
 
 /// Time given to PHP-FPM to create its socket.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -205,6 +205,7 @@ impl PhpPools {
                 pid,
                 pid_file: fpm.pid_file.clone(),
                 log: fpm.log_file.clone(),
+                stop: StopPolicy::DEFAULT,
             },
             Arc::clone(state),
         ))
@@ -266,7 +267,7 @@ pub(crate) fn stop_orphans(layout: &RuntimeLayout) {
             .iter()
             .find(|runtime| runtime.name == RuntimeName::Php && runtime.version == version)
             .and_then(|runtime| runtime.program("php-fpm"));
-        process::stop_orphan(&path, executable.as_deref(), "PHP-FPM");
+        process::stop_orphan(&path, executable.as_slice(), "PHP-FPM", StopPolicy::DEFAULT);
     }
 }
 

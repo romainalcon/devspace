@@ -69,6 +69,8 @@ sha2 = "0.11"
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+# xz decoding (MySQL Linux archives); liblzma built from source and linked statically
+liblzma = { version = "0.4", default-features = false, features = ["static"] }
 base64 = "0.23"
 
 # Package index signatures (minisign format, Ed25519)

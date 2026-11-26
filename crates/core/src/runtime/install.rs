@@ -240,36 +240,118 @@ fn build(
     fs::write(&receipt_path, text).map_err(install_error(&receipt_path))
 }
 
-/// A program of a runtime and how it reports its version.
+/// A program of a package and how it reports its version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VersionCheck {
     /// Program name without the `.exe` suffix.
     pub program: &'static str,
     /// Argument printing the version.
     pub arg: &'static str,
-    /// Expected start of the output, before the version number.
+    /// Expected text before the version number.
     pub prefix: &'static str,
     /// Expected text right after the version number.
     pub suffix: &'static str,
+    /// Whether the prefix may follow other text (MySQL programs start
+    /// with their own path); otherwise the output starts with it.
+    pub anywhere: bool,
+    /// How the program prints the version.
+    pub style: VersionStyle,
+}
+
+/// How a program prints its version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VersionStyle {
+    /// Every component, as in the index.
+    Full,
+    /// `MAJOR.MINOR` (PostgreSQL, whose index versions have a patch
+    /// number of `0`).
+    MajorMinor,
+    /// `MAJOR.MINOR.PATCH`, without the rebuild number (MySQL `8.4.13.1`
+    /// reports `8.4.13`).
+    WithoutBuild,
+}
+
+impl VersionCheck {
+    const fn new(program: &'static str, arg: &'static str, prefix: &'static str) -> Self {
+        Self {
+            program,
+            arg,
+            prefix,
+            suffix: "",
+            anywhere: false,
+            style: VersionStyle::Full,
+        }
+    }
+
+    const fn suffix(mut self, suffix: &'static str) -> Self {
+        self.suffix = suffix;
+        self
+    }
+
+    const fn anywhere(mut self) -> Self {
+        self.anywhere = true;
+        self
+    }
+
+    const fn major_minor(mut self) -> Self {
+        self.style = VersionStyle::MajorMinor;
+        self
+    }
+
+    const fn without_build(mut self) -> Self {
+        self.style = VersionStyle::WithoutBuild;
+        self
+    }
+
+    /// Whether the first line printed by the program reports `version`.
+    #[must_use]
+    pub fn matches(&self, first_line: &str, version: Version) -> bool {
+        let expected = self.expected(version);
+        let found = if self.anywhere {
+            first_line.find(&expected)
+        } else {
+            first_line.starts_with(&expected).then_some(0)
+        };
+        found.is_some_and(|start| {
+            first_line[start + expected.len()..]
+                .chars()
+                .next()
+                .is_none_or(|next| !next.is_ascii_digit() && next != '.')
+        })
+    }
+
+    fn expected(&self, version: Version) -> String {
+        let version = match self.style {
+            VersionStyle::Full => version.to_string(),
+            VersionStyle::MajorMinor => format!("{}.{}", version.major, version.minor),
+            VersionStyle::WithoutBuild => {
+                format!("{}.{}.{}", version.major, version.minor, version.patch)
+            }
+        };
+        format!("{}{version}{}", self.prefix, self.suffix)
+    }
 }
 
 /// Programs every installation of `name` must provide on `os`.
 #[must_use]
 pub fn version_checks(name: RuntimeName, os: OsFamily) -> Vec<VersionCheck> {
     match name {
-        RuntimeName::Node => vec![VersionCheck {
-            program: "node",
-            arg: "--version",
-            prefix: "v",
-            suffix: "",
-        }],
+        RuntimeName::Node => vec![VersionCheck::new("node", "--version", "v")],
+        RuntimeName::Mysql => vec![
+            VersionCheck::new("mysqld", "--version", " Ver ")
+                .anywhere()
+                .without_build(),
+            VersionCheck::new("mysql", "--version", " Ver ")
+                .anywhere()
+                .without_build(),
+        ],
+        RuntimeName::Postgresql => vec![
+            VersionCheck::new("postgres", "--version", "postgres (PostgreSQL) ").major_minor(),
+            VersionCheck::new("initdb", "--version", "initdb (PostgreSQL) ").major_minor(),
+            VersionCheck::new("psql", "--version", "psql (PostgreSQL) ").major_minor(),
+        ],
         RuntimeName::Php => {
-            let cli = VersionCheck {
-                program: "php",
-                arg: "-v",
-                prefix: "PHP ",
-                suffix: " (cli)",
-            };
+            let cli = VersionCheck::new("php", "-v", "PHP ").suffix(" (cli)");
             // Windows has no FastCGI process manager; PHP serving is not
             // supported there yet, so only the CLI is required.
             if os == OsFamily::Windows {
@@ -277,12 +359,7 @@ pub fn version_checks(name: RuntimeName, os: OsFamily) -> Vec<VersionCheck> {
             } else {
                 vec![
                     cli,
-                    VersionCheck {
-                        program: "php-fpm",
-                        arg: "-v",
-                        prefix: "PHP ",
-                        suffix: " (fpm-fcgi)",
-                    },
+                    VersionCheck::new("php-fpm", "-v", "PHP ").suffix(" (fpm-fcgi)"),
                 ]
             }
         }
@@ -303,20 +380,15 @@ fn check_version(
     };
     let output = program_output(program, &[check.arg], VERSION_CHECK_TIMEOUT)
         .map_err(|detail| failure(format!("`{}` {detail}", program.display())))?;
-    let expected = format!("{}{version}{}", check.prefix, check.suffix);
     let first_line = output.lines().next().unwrap_or_default().trim();
-    let matches = first_line.starts_with(&expected)
-        && first_line[expected.len()..]
-            .chars()
-            .next()
-            .is_none_or(|next| !next.is_ascii_digit() && next != '.');
-    if matches {
+    if check.matches(first_line, version) {
         Ok(())
     } else {
         Err(failure(format!(
-            "`{} {}` printed `{first_line}`, expected `{expected}`",
+            "`{} {}` printed `{first_line}`, expected `{}`",
             program.display(),
-            check.arg
+            check.arg,
+            check.expected(version)
         )))
     }
 }
@@ -645,6 +717,36 @@ mod tests {
         }
         fs::write(&script, "#!/bin/sh\nexit 3\n").unwrap();
         assert!(check_version(&script, check, RuntimeName::Php, v).is_err());
+    }
+
+    #[test]
+    fn service_programs_report_their_version() {
+        let check = |name, index| version_checks(name, OsFamily::MacOs)[index];
+        let mysqld = check(RuntimeName::Mysql, 0);
+        let v = Version::parse("8.4.13.1").unwrap();
+        // As printed by the real 8.4.13.1 build: without the rebuild.
+        assert!(mysqld.matches(
+            "/data/runtimes/mysql/8.4.13.1/bin/mysqld  Ver 8.4.13 for macos15 on arm64 \
+             (MySQL Community Server - GPL)",
+            v
+        ));
+        assert!(!mysqld.matches("/x/mysqld  Ver 8.4.12 for macos15", v));
+        assert!(!mysqld.matches("/x/mysqld  Ver 8.4.130 for macos15", v));
+        assert!(!mysqld.matches("/x/mysqld  Ver 8.4.13.2 for macos15", v));
+        assert!(!mysqld.matches("mysqld 8.4.13.1", v));
+
+        let postgres = check(RuntimeName::Postgresql, 0);
+        let v = Version::parse("18.7.0").unwrap();
+        assert!(postgres.matches("postgres (PostgreSQL) 18.7", v));
+        assert!(!postgres.matches("postgres (PostgreSQL) 18.70", v));
+        assert!(!postgres.matches("psql (PostgreSQL) 18.7", v));
+        assert_eq!(
+            version_checks(RuntimeName::Postgresql, OsFamily::Windows)
+                .iter()
+                .map(|check| check.program)
+                .collect::<Vec<_>>(),
+            ["postgres", "initdb", "psql"]
+        );
     }
 
     #[test]

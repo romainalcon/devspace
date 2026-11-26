@@ -12,6 +12,7 @@ use devspace_core::runtime::{
     self, InstalledRuntime, RuntimeLayout, RuntimeName, Selected, Selection, Version, VersionReq,
     install,
 };
+use devspace_core::service::ServiceName;
 use devspace_ipc::{
     ErrorCode, ErrorResponse, Response, RuntimeEnv, RuntimeEnvEntry, RuntimeInfo, RuntimeList,
     RuntimeVersionInfo,
@@ -20,6 +21,7 @@ use devspace_platform::target::Target;
 
 use crate::handlers::{self, DaemonState};
 use crate::php::{self, PhpPools};
+use crate::services;
 
 /// Runtime state of the daemon.
 #[derive(Debug)]
@@ -167,8 +169,13 @@ pub(crate) async fn install(
         response,
         Response::RuntimeInstalled(RuntimeInfo { changed: true, .. })
     ) {
-        // A PHP site may now be served.
-        handlers::reload_in_background(state);
+        if name.is_service() {
+            // A required instance may now run, or run a newer version.
+            services::apply_in_background(state);
+        } else {
+            // A PHP site may now be served.
+            handlers::reload_in_background(state);
+        }
     }
     response
 }
@@ -183,10 +190,11 @@ pub(crate) async fn remove(state: &Arc<DaemonState>, name: &str, version: &str) 
     };
     let response = {
         let _changes = state.runtimes.changes.lock().await;
+        // Its files are about to disappear.
         if name == RuntimeName::Php {
-            // Its files are about to disappear.
             state.runtimes.php.stop(version).await;
         }
+        state.services.stop_version(name, version).await;
         handlers::blocking(state, move |state| {
             match install::remove(&state.runtimes.layout, name, version) {
                 Ok(runtime) => Response::RuntimeRemoved(runtime_info(&runtime, true)),
@@ -195,8 +203,13 @@ pub(crate) async fn remove(state: &Arc<DaemonState>, name: &str, version: &str) 
         })
         .await
     };
-    // The sites of that version move to another one or become unavailable.
-    handlers::reload_in_background(state);
+    // The sites and instances of that version move to another one or
+    // become unavailable.
+    if name.is_service() {
+        services::apply_in_background(state);
+    } else {
+        handlers::reload_in_background(state);
+    }
     response
 }
 
@@ -239,8 +252,7 @@ fn environment(state: &DaemonState, directory: &Path) -> Result<Response, Respon
     let mut missing = Vec::new();
     for name in RuntimeName::ALL {
         let selection = manifest
-            .runtimes
-            .get(name)
+            .requirement(name)
             .map_or(Selection::Newest, Selection::Manifest);
         match runtime::select(&installed, name, selection) {
             Selected::Installed(runtime) => {
@@ -249,6 +261,10 @@ fn environment(state: &DaemonState, directory: &Path) -> Result<Response, Respon
                     let fpm = state.runtimes.layout.fpm(runtime.version);
                     php::write_ini(&fpm).map_err(|err| handlers::error_response(&err))?;
                     variables.push(("PHPRC".to_owned(), fpm.ini_dir.display().to_string()));
+                }
+                if let Some(service) = ServiceName::of_package(name) {
+                    let (address, port) = state.services.endpoint(service);
+                    variables.extend(service.client_variables(address, port));
                 }
                 runtimes.push(RuntimeEnvEntry {
                     name: name.to_string(),
@@ -259,9 +275,14 @@ fn environment(state: &DaemonState, directory: &Path) -> Result<Response, Respon
             }
             Selected::Missing => {
                 if let Selection::Manifest(req) = selection {
+                    let command = if name.is_service() {
+                        "service"
+                    } else {
+                        "runtime"
+                    };
                     missing.push(format!(
                         "{name} {req} (required by devspace.toml) is not installed; run \
-                         `devspace runtime install {name} {req}`"
+                         `devspace {command} install {name} {req}`"
                     ));
                 }
             }

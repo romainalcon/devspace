@@ -12,8 +12,11 @@
 //! - [`instance`]: single-instance lock of the daemon.
 //! - [`logging`]: `tracing` subscriber initialisation (stderr, rolling files).
 //! - [`project`]: project registry and per-project manifest (`devspace.toml`).
-//! - [`runtime`]: runtime package manager (PHP, Node.js): signed index,
-//!   verified installation, versions side by side, PHP-FPM configuration.
+//! - [`runtime`]: package manager (PHP, Node.js, MySQL, PostgreSQL): signed
+//!   index, verified installation, versions side by side, PHP-FPM
+//!   configuration.
+//! - [`service`]: service instances (databases): which ones run, their
+//!   data directories and command lines.
 //! - [`web`]: web server (Caddy), local domains, DNS answers and local
 //!   certificate authority.
 //! - [`ensure_unprivileged`]: guard refusing elevated execution.
@@ -27,6 +30,7 @@ pub mod instance;
 pub mod logging;
 pub mod project;
 pub mod runtime;
+pub mod service;
 pub mod web;
 
 pub use devspace_platform::AppPaths;

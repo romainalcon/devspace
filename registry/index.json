@@ -1,7 +1,97 @@
 {
   "schema_version": 1,
-  "serial": 1,
+  "serial": 2,
   "runtimes": {
+    "mysql": {
+      "8.4.13.1": {
+        "macos-aarch64": {
+          "archives": [
+            {
+              "url": "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.13.1-macos15-arm64.tar.gz",
+              "sha256": "037e10356421005ad693e62dba823912861f5949facfe7aeca56626d29e01b89",
+              "size": 165361031,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-x86_64": {
+          "archives": [
+            {
+              "url": "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.13.1-linux-glibc2.28-x86_64-minimal.tar.xz",
+              "sha256": "88a70ec3dd9b55a79c0767b352022de95ff9b6ba7db439b6a7577544b4dce160",
+              "size": 79749324,
+              "format": "tar.xz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "windows-x86_64": {
+          "archives": [
+            {
+              "url": "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.13.1-winx64.zip",
+              "sha256": "b96b13299bd0e74deaf543ae77d7aea5dac57bfae24ae30902d8899912a43382",
+              "size": 281355352,
+              "format": "zip",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        }
+      },
+      "9.7.4.1": {
+        "macos-aarch64": {
+          "archives": [
+            {
+              "url": "https://cdn.mysql.com/Downloads/MySQL-9.7/mysql-9.7.4.1-macos15-arm64.tar.gz",
+              "sha256": "bc0740b4d46f437209ed36d257dd08109e643ca892f01beeb549f5564f94ff26",
+              "size": 174446064,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-x86_64": {
+          "archives": [
+            {
+              "url": "https://cdn.mysql.com/Downloads/MySQL-9.7/mysql-9.7.4.1-linux-glibc2.28-x86_64-minimal.tar.xz",
+              "sha256": "ff0efe8e5eb17d9f1b59efcac34bb6037c98244e32d61624d1b4eb20f9ea676c",
+              "size": 88164584,
+              "format": "tar.xz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "windows-x86_64": {
+          "archives": [
+            {
+              "url": "https://cdn.mysql.com/Downloads/MySQL-9.7/mysql-9.7.4.1-winx64.zip",
+              "sha256": "1989c9a63674c01b0851523f6eaf21f1f4e233e678858423b5b9b6a24420b546",
+              "size": 344069278,
+              "format": "zip",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        }
+      }
+    },
     "node": {
       "22.23.5": {
         "macos-aarch64": {
@@ -420,6 +510,224 @@
           ],
           "bin": [
             "."
+          ]
+        }
+      }
+    },
+    "postgresql": {
+      "17.12.0": {
+        "macos-aarch64": {
+          "archives": [
+            {
+              "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/17.12.0/postgresql-17.12.0-aarch64-apple-darwin.tar.gz",
+              "sha256": "2f752033b208f9a6a12ef64a9ee23bf19149cff160841980db1e221bf7d24809",
+              "size": 90196480,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "macos-x86_64": {
+          "archives": [
+            {
+              "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/17.12.0/postgresql-17.12.0-x86_64-apple-darwin.tar.gz",
+              "sha256": "34ba0eca0f15776b4ab9a07b2decc6fb0b1910a57870ad7d7dacb7399b43c9bd",
+              "size": 93377231,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-x86_64": {
+          "archives": [
+            {
+              "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/17.12.0/postgresql-17.12.0-x86_64-unknown-linux-gnu.tar.gz",
+              "sha256": "af316b6e42266ec0a153bdc9194e0b1b5f12c9ce4f0b13d9a96dfca77d9aaecc",
+              "size": 40118562,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-aarch64": {
+          "archives": [
+            {
+              "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/17.12.0/postgresql-17.12.0-aarch64-unknown-linux-gnu.tar.gz",
+              "sha256": "9b3ca376cbdecb297711f9b09bfe834ae0f7c231042de58b7cb4bb2c0a526301",
+              "size": 39514574,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "windows-x86_64": {
+          "archives": [
+            {
+              "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/17.12.0/postgresql-17.12.0-x86_64-pc-windows-msvc.zip",
+              "sha256": "e45909100dd4d7309981054d5625e70612150999d106741d1c01a5443be918bf",
+              "size": 49403508,
+              "format": "zip",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        }
+      },
+      "18.7.0": {
+        "macos-aarch64": {
+          "archives": [
+            {
+              "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/18.7.0/postgresql-18.7.0-aarch64-apple-darwin.tar.gz",
+              "sha256": "86456c0ed99d2466524eaa074db6580cf7d748b91042e252c83eaca9a9d216e7",
+              "size": 88965986,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "macos-x86_64": {
+          "archives": [
+            {
+              "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/18.7.0/postgresql-18.7.0-x86_64-apple-darwin.tar.gz",
+              "sha256": "9cd649259d6bf4af60a235e772c83853df215b63f4c1967c2eed7f9376aefb89",
+              "size": 92187545,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-x86_64": {
+          "archives": [
+            {
+              "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/18.7.0/postgresql-18.7.0-x86_64-unknown-linux-gnu.tar.gz",
+              "sha256": "53ca01952cb581145e4fb16b6b3b675da345a82879f350707b9f65863a0642f4",
+              "size": 40530262,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-aarch64": {
+          "archives": [
+            {
+              "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/18.7.0/postgresql-18.7.0-aarch64-unknown-linux-gnu.tar.gz",
+              "sha256": "6fcf45163aa044fe58597885b0e27c4b1614c53ad088d4d0ebbbfdf5df510eaf",
+              "size": 39931153,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "windows-x86_64": {
+          "archives": [
+            {
+              "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/18.7.0/postgresql-18.7.0-x86_64-pc-windows-msvc.zip",
+              "sha256": "64948bd862b2f9c253067d3476e971b8b31291376fb004c5c7d5d016509401f7",
+              "size": 49797717,
+              "format": "zip",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        }
+      },
+      "19.0.0": {
+        "macos-aarch64": {
+          "archives": [
+            {
+              "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/19.0.0/postgresql-19.0.0-aarch64-apple-darwin.tar.gz",
+              "sha256": "3165a453906bb345f54e189f65db828a76d60e7696191afd26fca6dc73ba51a4",
+              "size": 89923330,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "macos-x86_64": {
+          "archives": [
+            {
+              "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/19.0.0/postgresql-19.0.0-x86_64-apple-darwin.tar.gz",
+              "sha256": "f255a9c1a3489b4125794c7d2221ff6d82466d5da24876a3a9655c5a596e2efd",
+              "size": 93170556,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-x86_64": {
+          "archives": [
+            {
+              "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/19.0.0/postgresql-19.0.0-x86_64-unknown-linux-gnu.tar.gz",
+              "sha256": "ec7044fb9e2f1126383a869e463c8028d403d161c6a4a88501f43ca64112b623",
+              "size": 40942674,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-aarch64": {
+          "archives": [
+            {
+              "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/19.0.0/postgresql-19.0.0-aarch64-unknown-linux-gnu.tar.gz",
+              "sha256": "256ae47d0e9e0e6e22586643e10ed554b54d5679b6f401ef63d09a0fbc3368d2",
+              "size": 40317755,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "windows-x86_64": {
+          "archives": [
+            {
+              "url": "https://github.com/theseus-rs/postgresql-binaries/releases/download/19.0.0/postgresql-19.0.0-x86_64-pc-windows-msvc.zip",
+              "sha256": "5b0ceae52de3dbb356a2003fd95c5a323e220bab1e1b6e3ba3bb0da61f8b9ef9",
+              "size": 50076707,
+              "format": "zip",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
           ]
         }
       }

@@ -1,6 +1,7 @@
 //! Extraction of downloaded archives.
 //!
-//! Two modes, both safe against hostile archives (no path traversal):
+//! Formats: `.tar.gz`, `.tar.xz` and `.zip`. Two modes, both safe against
+//! hostile archives (no path traversal):
 //!
 //! - [`extract_file`] copies one entry into a destination chosen by the
 //!   caller: names, paths, links and permissions stored in the archive are
@@ -22,6 +23,8 @@ pub use tree::{TreeLimits, extract_tree};
 pub enum ArchiveKind {
     /// Gzip-compressed tar archive (`.tar.gz`).
     TarGz,
+    /// Xz-compressed tar archive (`.tar.xz`).
+    TarXz,
     /// Zip archive (`.zip`).
     Zip,
 }
@@ -64,7 +67,15 @@ pub enum ArchiveError {
         /// Its target.
         target: String,
     },
-    /// An entry type that is never extracted (hard link, device, …).
+    /// A hard link does not designate a regular file extracted before it.
+    #[error("hard link `{link}` → `{target}` does not designate a file of the archive")]
+    UnsafeHardLink {
+        /// Link entry.
+        link: String,
+        /// Its target.
+        target: String,
+    },
+    /// An entry type that is never extracted (device, FIFO, …).
     #[error("entry `{0}` has an unsupported type")]
     UnsupportedEntry(String),
     /// Two entries have the same path.
@@ -101,18 +112,26 @@ pub fn extract_file(
 ) -> Result<u64, ArchiveError> {
     let file = File::open(archive).map_err(ArchiveError::Read)?;
     match kind {
-        ArchiveKind::TarGz => extract_from_tar_gz(file, entry, dest, max_len),
+        ArchiveKind::TarGz => {
+            extract_from_tar(flate2::read::GzDecoder::new(file), entry, dest, max_len)
+        }
+        ArchiveKind::TarXz => extract_from_tar(xz_decoder(file), entry, dest, max_len),
         ArchiveKind::Zip => extract_from_zip(file, entry, dest, max_len),
     }
 }
 
-fn extract_from_tar_gz(
-    file: File,
+/// Decoder of an xz stream (a single stream, as produced by `xz`).
+pub(crate) fn xz_decoder(file: File) -> impl Read {
+    liblzma::read::XzDecoder::new(file)
+}
+
+fn extract_from_tar(
+    reader: impl Read,
     entry: &str,
     dest: &mut impl Write,
     max_len: u64,
 ) -> Result<u64, ArchiveError> {
-    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    let mut archive = tar::Archive::new(reader);
     for item in archive.entries().map_err(ArchiveError::Read)? {
         let item = item.map_err(ArchiveError::Read)?;
         let path = item.path().map_err(ArchiveError::Read)?;

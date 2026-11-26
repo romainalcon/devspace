@@ -422,6 +422,15 @@ pub enum Error {
         version: crate::runtime::Version,
     },
 
+    /// The data directory of a service instance could not be created.
+    #[error("{instance} cannot be initialised: {detail}")]
+    ServiceInit {
+        /// Service and series.
+        instance: String,
+        /// What went wrong.
+        detail: String,
+    },
+
     /// A path cannot be used in a generated configuration.
     #[error("unsupported path `{}`: {reason}", path.display())]
     UnsupportedPath {

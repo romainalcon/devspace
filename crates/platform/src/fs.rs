@@ -102,6 +102,17 @@ pub fn symlink(target: &Path, link: &Path) -> io::Result<()> {
     imp::symlink(target, link)
 }
 
+/// Creates the directory `path` (its parent must exist), accessible by the
+/// owner only on Unix (`0700`, whatever the umask); on Windows it inherits
+/// the ACL of its parent.
+///
+/// # Errors
+///
+/// Returns the underlying I/O error, including when `path` exists.
+pub fn create_private_dir(path: &Path) -> io::Result<()> {
+    imp::create_private_dir(path)
+}
+
 /// Path of a temporary file next to `path`, unique to this process.
 ///
 /// # Errors
@@ -140,6 +151,12 @@ mod imp {
     pub(super) fn symlink(target: &Path, link: &Path) -> io::Result<()> {
         std::os::unix::fs::symlink(target, link)
     }
+
+    pub(super) fn create_private_dir(path: &Path) -> io::Result<()> {
+        use std::os::unix::fs::DirBuilderExt as _;
+        fs::DirBuilder::new().mode(0o700).create(path)?;
+        fs::set_permissions(path, Permissions::from_mode(0o700))
+    }
 }
 
 #[cfg(windows)]
@@ -156,6 +173,10 @@ mod imp {
     }
 
     pub(super) fn restrict(_options: &mut OpenOptions, _mode: FileMode) {}
+
+    pub(super) fn create_private_dir(path: &Path) -> io::Result<()> {
+        std::fs::create_dir(path)
+    }
 
     pub(super) fn symlink(_target: &Path, link: &Path) -> io::Result<()> {
         Err(io::Error::new(

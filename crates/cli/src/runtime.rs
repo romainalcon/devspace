@@ -29,7 +29,7 @@ pub enum RuntimeCommand {
     List,
     /// Download, verify and install a version.
     Install {
-        /// Runtime: `php` or `node`.
+        /// Runtime: `php`, `node`, `mysql` or `postgresql`.
         name: String,
         /// `MAJOR`, `MAJOR.MINOR` or `MAJOR.MINOR.PATCH`; the newest
         /// published match is installed (the newest version if absent).
@@ -37,7 +37,7 @@ pub enum RuntimeCommand {
     },
     /// Remove an installed version.
     Remove {
-        /// Runtime: `php` or `node`.
+        /// Runtime: `php`, `node`, `mysql` or `postgresql`.
         name: String,
         /// Exact installed version, e.g. `8.4.23`.
         version: String,

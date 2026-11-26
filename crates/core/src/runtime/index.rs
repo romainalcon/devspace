@@ -127,6 +127,9 @@ pub enum ArchiveFormat {
     /// `.tar.gz`.
     #[serde(rename = "tar.gz")]
     TarGz,
+    /// `.tar.xz`.
+    #[serde(rename = "tar.xz")]
+    TarXz,
     /// `.zip`.
     #[serde(rename = "zip")]
     Zip,
@@ -136,6 +139,7 @@ impl From<ArchiveFormat> for ArchiveKind {
     fn from(format: ArchiveFormat) -> Self {
         match format {
             ArchiveFormat::TarGz => Self::TarGz,
+            ArchiveFormat::TarXz => Self::TarXz,
             ArchiveFormat::Zip => Self::Zip,
         }
     }
@@ -512,29 +516,32 @@ pub(crate) mod tests {
         );
     }
 
+    /// Whether the index is expected to publish `name` for `target`.
+    /// MySQL publishes no macOS x86_64 build, and only a full Linux ARM64
+    /// archive larger than [`MAX_ARCHIVE_LEN`].
+    fn expected(name: RuntimeName, target: Target) -> bool {
+        !matches!(
+            (name, target.os, target.arch),
+            (_, OsFamily::Windows, Arch::Aarch64)
+                | (RuntimeName::Mysql, OsFamily::MacOs, Arch::X86_64)
+                | (RuntimeName::Mysql, OsFamily::Linux, Arch::Aarch64)
+        )
+    }
+
     #[test]
     fn embedded_index_is_signed_and_covers_every_platform() {
         let index = Index::embedded().unwrap();
-        for os in [OsFamily::MacOs, OsFamily::Linux] {
+        for os in [OsFamily::MacOs, OsFamily::Linux, OsFamily::Windows] {
             for arch in [Arch::Aarch64, Arch::X86_64] {
                 let target = Target { os, arch };
                 for name in RuntimeName::ALL {
-                    assert!(
+                    assert_eq!(
                         !index.versions(name, target).is_empty(),
+                        expected(name, target),
                         "{name} {target:?}"
                     );
                 }
             }
-        }
-        let windows = Target {
-            os: OsFamily::Windows,
-            arch: Arch::X86_64,
-        };
-        for name in RuntimeName::ALL {
-            assert!(
-                !index.versions(name, windows).is_empty(),
-                "{name} on Windows"
-            );
         }
     }
 }

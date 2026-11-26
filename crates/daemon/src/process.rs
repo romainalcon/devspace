@@ -1,8 +1,9 @@
-//! Supervision of the child processes of the daemon (Caddy, PHP-FPM).
+//! Supervision of the child processes of the daemon (Caddy, PHP-FPM, the
+//! service servers).
 //!
 //! A monitor task owns each child: it records an unexpected exit as a
-//! failure in the shared state, and performs graceful stops (`SIGTERM`,
-//! then a kill after [`STOP_TIMEOUT`]). The pid of every child is kept in
+//! failure in the shared state, and performs graceful stops (a signal,
+//! then a kill after the timeout of its [`StopPolicy`]). The pid of every child is kept in
 //! a file of the runtime directory, so that a daemon restarted after a
 //! crash can stop what the previous one left (only if that pid still runs
 //! the expected executable).
@@ -13,12 +14,27 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use devspace_ipc::WebServerState;
+use devspace_platform::process::StopRequest;
 use tokio::process::Child;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-/// Time given to a child to stop gracefully before it is killed.
-pub(crate) const STOP_TIMEOUT: Duration = Duration::from_secs(5);
+/// How a child is stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StopPolicy {
+    /// Graceful stop request.
+    pub(crate) request: StopRequest,
+    /// Time given to stop before the child is killed.
+    pub(crate) timeout: Duration,
+}
+
+impl StopPolicy {
+    /// `SIGTERM`, then a kill after 5 s (Caddy, PHP-FPM).
+    pub(crate) const DEFAULT: Self = Self {
+        request: StopRequest::Terminate,
+        timeout: Duration::from_secs(5),
+    };
+}
 
 /// Interval between checks while waiting for a process.
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -54,6 +70,8 @@ pub(crate) struct ChildInfo {
     pub(crate) pid_file: PathBuf,
     /// Output of the child, quoted in failures.
     pub(crate) log: PathBuf,
+    /// How it is stopped.
+    pub(crate) stop: StopPolicy,
 }
 
 impl Supervised {
@@ -92,6 +110,7 @@ async fn monitor(
         pid,
         pid_file,
         log,
+        stop: policy,
     } = info;
     tokio::select! {
         status = child.wait() => {
@@ -106,11 +125,11 @@ async fn monitor(
             set_state(&state, WebServerState::Failed { message });
         }
         _ = stop => {
-            if let Err(err) = devspace_platform::process::request_stop(pid) {
+            if let Err(err) = devspace_platform::process::request_stop_with(pid, policy.request) {
                 tracing::warn!(pid, error = %err, "failed to ask the {name} to stop");
             }
-            if tokio::time::timeout(STOP_TIMEOUT, child.wait()).await.is_err() {
-                tracing::warn!(pid, timeout_secs = STOP_TIMEOUT.as_secs(), "{name} did not stop in time; killing it");
+            if tokio::time::timeout(policy.timeout, child.wait()).await.is_err() {
+                tracing::warn!(pid, timeout_secs = policy.timeout.as_secs(), "{name} did not stop in time; killing it");
                 let _ = child.kill().await;
             }
             tracing::info!(pid, "{name} stopped");
@@ -121,24 +140,34 @@ async fn monitor(
 }
 
 /// Stops a process left running by a previous daemon (crash or kill), if
-/// `pid_file` designates a process that still runs `executable`, then
-/// removes the pid file. Blocking.
-pub(crate) fn stop_orphan(pid_file: &Path, executable: Option<&Path>, name: &str) {
+/// `pid_file` designates a process that still runs one of `executables`,
+/// then removes the pid file. Blocking.
+pub(crate) fn stop_orphan(
+    pid_file: &Path,
+    executables: &[PathBuf],
+    name: &str,
+    policy: StopPolicy,
+) {
     let Ok(text) = fs::read_to_string(pid_file) else {
         return;
     };
-    if let (Ok(pid), Some(executable)) = (text.trim().parse::<u32>(), executable)
-        && runs_executable(pid, executable)
+    let running = |pid: u32| {
+        executables
+            .iter()
+            .any(|executable| runs_executable(pid, executable))
+    };
+    if let Ok(pid) = text.trim().parse::<u32>()
+        && running(pid)
     {
         tracing::warn!(pid, "stopping the {name} left by a previous daemon");
-        if let Err(err) = devspace_platform::process::request_stop(pid) {
+        if let Err(err) = devspace_platform::process::request_stop_with(pid, policy.request) {
             tracing::warn!(pid, error = %err, "failed to stop the previous {name}");
         }
-        let deadline = Instant::now() + STOP_TIMEOUT;
-        while runs_executable(pid, executable) && Instant::now() < deadline {
+        let deadline = Instant::now() + policy.timeout;
+        while running(pid) && Instant::now() < deadline {
             std::thread::sleep(POLL_INTERVAL);
         }
-        if runs_executable(pid, executable) {
+        if running(pid) {
             let _ = devspace_platform::process::kill(pid);
         }
     }
@@ -187,16 +216,22 @@ mod tests {
         let executable = tmp.path().join("caddy");
         fs::write(&executable, "").unwrap();
         // The test process itself does not run that executable.
+        let policy = StopPolicy::DEFAULT;
         fs::write(&pid_file, std::process::id().to_string()).unwrap();
-        stop_orphan(&pid_file, Some(&executable), "web server");
+        stop_orphan(
+            &pid_file,
+            std::slice::from_ref(&executable),
+            "web server",
+            policy,
+        );
         assert!(!pid_file.exists());
 
         fs::write(&pid_file, "garbage").unwrap();
-        stop_orphan(&pid_file, Some(&executable), "web server");
+        stop_orphan(&pid_file, &[executable], "web server", policy);
         assert!(!pid_file.exists());
 
         fs::write(&pid_file, "1").unwrap();
-        stop_orphan(&pid_file, None, "web server");
+        stop_orphan(&pid_file, &[], "web server", policy);
         assert!(!pid_file.exists());
     }
 }

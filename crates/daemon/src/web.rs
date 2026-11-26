@@ -24,7 +24,7 @@ use devspace_platform::fs::{FileMode, write_atomic};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::process::Child;
 
-use crate::process::{self, ChildInfo, POLL_INTERVAL, SharedState, Supervised};
+use crate::process::{self, ChildInfo, POLL_INTERVAL, SharedState, StopPolicy, Supervised};
 
 /// Time given to Caddy to start accepting connections.
 const START_TIMEOUT: Duration = Duration::from_secs(15);
@@ -292,6 +292,7 @@ impl WebServer {
                 pid,
                 pid_file: layout.caddy_pid_file.clone(),
                 log: layout.caddy_log.clone(),
+                stop: StopPolicy::DEFAULT,
             },
             Arc::clone(&self.state),
         ))
@@ -363,8 +364,9 @@ impl WebServer {
 pub(crate) fn stop_orphan(layout: &WebLayout) {
     process::stop_orphan(
         &layout.caddy_pid_file,
-        Some(&layout.caddy_binary),
+        std::slice::from_ref(&layout.caddy_binary),
         "web server",
+        StopPolicy::DEFAULT,
     );
 }
 

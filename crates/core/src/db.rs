@@ -28,6 +28,14 @@ const MIGRATIONS: &[&str] = &[
         path     TEXT    NOT NULL UNIQUE,
         added_at INTEGER NOT NULL
     ) STRICT;",
+    // Version 2: choices of the user for the service instances; an
+    // instance without a row follows the projects.
+    "CREATE TABLE services (
+        name   TEXT NOT NULL,
+        series TEXT NOT NULL,
+        mode   TEXT NOT NULL CHECK (mode IN ('started', 'stopped')),
+        PRIMARY KEY (name, series)
+    ) STRICT;",
 ];
 
 /// Schema version produced by this build.

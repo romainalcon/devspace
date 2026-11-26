@@ -18,6 +18,19 @@ before extracting it. See `crates/core/src/runtime/index.rs` for the format.
      it (`shasum -a 256`).
    - PHP on Windows: the NTS x64 zip of `https://downloads.php.net/~windows/releases/releases.json`
      (its `sha256` field); `bin` is `["."]`.
+   - PostgreSQL: the archives of `https://github.com/theseus-rs/postgresql-binaries/releases`
+     (`postgresql-X.Y.0-<target>.tar.gz`, `.zip` for Windows,
+     `strip_components: 1`, `bin` is `["bin"]`); SHA-256 in the `.sha256`
+     file next to each archive (also GitHub's asset digest). Targets:
+     `aarch64-apple-darwin`, `x86_64-apple-darwin`,
+     `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
+     `x86_64-pc-windows-msvc`.
+   - MySQL: `https://cdn.mysql.com/Downloads/MySQL-<series>/` —
+     `mysql-<v>-macos15-arm64.tar.gz`,
+     `mysql-<v>-linux-glibc2.28-x86_64-minimal.tar.xz`,
+     `mysql-<v>-winx64.zip` (`strip_components: 1`, `bin` is `["bin"]`).
+     Oracle publishes MD5 only: download each archive, compare its MD5
+     with the download page, and hash it (`shasum -a 256`).
    - `size` is the exact size in bytes of each archive.
 2. Sign it with the maintainer key (asks for its password):
 

@@ -29,6 +29,7 @@ pub use protocol::{
     CertificateAuthorityInfo, ClientMessage, DaemonInfo, DaemonStatus, DnsServerState, ErrorCode,
     ErrorResponse, IntegrationStatus, PROTOCOL_VERSION, PeerInfo, PhpPoolInfo, ProjectInfo,
     Request, Response, RuntimeEnv, RuntimeEnvEntry, RuntimeInfo, RuntimeList, RuntimeVersionInfo,
-    ServerMessage, SiteInfo, SiteTargetInfo, SystemIntegrations, WebServerState, WebStatus,
+    ServerMessage, ServiceInstanceInfo, ServiceList, ServiceMode, SiteInfo, SiteTargetInfo,
+    SystemIntegrations, WebServerState, WebStatus,
 };
 pub use server::ServerConnection;

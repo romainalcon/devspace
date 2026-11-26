@@ -16,6 +16,10 @@
 //! http_port = 47080      # web server ports on that address
 //! https_port = 47443
 //! dns_port = 47053       # DNS server (127.0.0.1, UDP) answering for *.<tld>
+//!
+//! [services]             # services listen on web.address
+//! mysql_port = 3306
+//! postgresql_port = 5432
 //! ```
 
 use std::fs;
@@ -40,6 +44,8 @@ pub struct GlobalConfig {
     pub logging: LoggingConfig,
     /// Web server and local domains.
     pub web: WebConfig,
+    /// Services (databases).
+    pub services: ServicesConfig,
 }
 
 impl Default for GlobalConfig {
@@ -48,6 +54,7 @@ impl Default for GlobalConfig {
             schema_version: CONFIG_SCHEMA_VERSION,
             logging: LoggingConfig::default(),
             web: WebConfig::default(),
+            services: ServicesConfig::default(),
         }
     }
 }
@@ -98,6 +105,50 @@ impl WebConfig {
         }
         if self.http_port == self.https_port {
             return Err("web.http_port and web.https_port must differ");
+        }
+        Ok(())
+    }
+}
+
+/// Service settings.
+///
+/// The services listen on the loopback address of the sites
+/// ([`WebConfig::address`]), on their usual ports by default: other tools
+/// using the same ports on `127.0.0.1` (Laravel Herd) are not disturbed.
+/// One instance of a service can use its port at a time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ServicesConfig {
+    /// TCP port of MySQL.
+    pub mysql_port: u16,
+    /// TCP port of PostgreSQL.
+    pub postgresql_port: u16,
+}
+
+impl Default for ServicesConfig {
+    fn default() -> Self {
+        Self {
+            mysql_port: 3306,
+            postgresql_port: 5432,
+        }
+    }
+}
+
+impl ServicesConfig {
+    /// Checks that the ports are unprivileged, distinct, and not used by
+    /// the web server on the same address.
+    fn validate(&self, web: &WebConfig) -> std::result::Result<(), &'static str> {
+        if self.mysql_port < 1024 || self.postgresql_port < 1024 {
+            return Err("service ports must be at least 1024 (DevSpace never runs privileged)");
+        }
+        if self.mysql_port == self.postgresql_port {
+            return Err("services.mysql_port and services.postgresql_port must differ");
+        }
+        if [self.mysql_port, self.postgresql_port]
+            .iter()
+            .any(|port| *port == web.http_port || *port == web.https_port)
+        {
+            return Err("service ports must differ from the web server ports");
         }
         Ok(())
     }
@@ -178,6 +229,7 @@ impl GlobalConfig {
         config
             .web
             .validate()
+            .and_then(|()| config.services.validate(&config.web))
             .map_err(|reason| Error::InvalidConfig {
                 path: origin.to_path_buf(),
                 reason,
@@ -322,6 +374,33 @@ mod tests {
                 "{invalid}"
             );
         }
+    }
+
+    #[test]
+    fn service_ports_are_validated() {
+        let defaults = GlobalConfig::default().services;
+        assert_eq!(
+            (defaults.mysql_port, defaults.postgresql_port),
+            (3306, 5432)
+        );
+        let config =
+            GlobalConfig::from_toml("[services]\npostgresql_port = 5433\n", origin()).unwrap();
+        assert_eq!(config.services.postgresql_port, 5433);
+        for invalid in [
+            "[services]\nmysql_port = 1000\n",
+            "[services]\nmysql_port = 5432\n",
+            "[services]\npostgresql_port = 47443\n",
+            "[web]\nhttp_port = 3306\n",
+        ] {
+            assert!(
+                matches!(
+                    GlobalConfig::from_toml(invalid, origin()),
+                    Err(Error::InvalidConfig { .. })
+                ),
+                "{invalid}"
+            );
+        }
+        assert!(GlobalConfig::from_toml("[services]\nredis_port = 6379\n", origin()).is_err());
     }
 
     #[test]
