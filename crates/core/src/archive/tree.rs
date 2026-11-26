@@ -495,6 +495,8 @@ mod tests {
         (tmp, result)
     }
 
+    // Symbolic links: tar archives of macOS and Linux only.
+    #[cfg(unix)]
     #[test]
     fn release_layout_is_recreated() {
         let (tmp, result) = extract(

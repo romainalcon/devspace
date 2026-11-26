@@ -147,6 +147,8 @@ mod tests {
             .fpm(Version::parse("8.4.23").unwrap())
     }
 
+    // PHP-FPM does not exist on Windows (Unix paths below).
+    #[cfg(unix)]
     #[test]
     fn configuration_listens_on_a_private_socket() {
         let fpm = fpm("/Users/me/Library/Application Support/DevSpace");

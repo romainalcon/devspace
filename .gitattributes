@@ -1,0 +1,4 @@
+# The package index, its signature and the public key are checked
+# byte for byte (minisign): never convert their line endings (Windows
+# checkouts would otherwise embed an index that fails its signature).
+registry/** -text
