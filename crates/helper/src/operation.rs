@@ -292,18 +292,13 @@ fn parse_options<'a>(
     }
     expected
         .iter()
-        .zip(options.chunks_exact(2))
-        .map(|(option, pair)| {
-            if pair[0] == *option {
-                Ok(OptionValue {
-                    option,
-                    value: &pair[1],
-                })
+        // The length was checked above: no option is left over.
+        .zip(options.as_chunks::<2>().0)
+        .map(|(option, [name, value])| {
+            if name == option {
+                Ok(OptionValue { option, value })
             } else {
-                Err(OperationError(format!(
-                    "expected `{option}`, got `{}`",
-                    pair[0]
-                )))
+                Err(OperationError(format!("expected `{option}`, got `{name}`")))
             }
         })
         .collect()

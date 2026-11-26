@@ -45,10 +45,35 @@ make -j"$jobs" BUILD_TLS=no USE_SYSTEMD=no
 pkg="$work/package/valkey-$version"
 mkdir -p "$pkg/bin"
 cp src/valkey-server src/valkey-cli "$pkg/bin/"
-strip "$pkg/bin/valkey-server" "$pkg/bin/valkey-cli"
+# Debug symbols only: Valkey looks up its built-in modules (Lua) with
+# dlsym, which needs the global symbols that a full strip removes on macOS.
+strip -S "$pkg/bin/valkey-server" "$pkg/bin/valkey-cli"
 cp COPYING "$pkg/"
 "$pkg/bin/valkey-server" --version
 "$pkg/bin/valkey-cli" --version
+
+# The server must really start: run it on a free port, ping it, stop it.
+port=46399
+data=$(mktemp -d)
+"$pkg/bin/valkey-server" --bind 127.0.0.1 --port "$port" --dir "$data" --save "" \
+  --daemonize no --logfile "" > "$data/log" 2>&1 &
+server=$!
+ok=no
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if "$pkg/bin/valkey-cli" -h 127.0.0.1 -p "$port" ping 2>/dev/null | grep -q PONG; then
+    ok=yes
+    break
+  fi
+  sleep 1
+done
+kill "$server" 2>/dev/null || true
+wait "$server" 2>/dev/null || true
+if [ "$ok" != yes ]; then
+  cat "$data/log" >&2
+  echo "valkey-server did not answer PING" >&2
+  exit 1
+fi
+rm -rf "$data"
 
 archive="$out/valkey-$version-$platform.tar.gz"
 cd "$work/package"

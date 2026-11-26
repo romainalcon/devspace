@@ -167,7 +167,9 @@ impl FromStr for Fingerprint {
             return Err(invalid());
         }
         let mut bytes = [0u8; 32];
-        for (byte, pair) in bytes.iter_mut().zip(digits.chunks_exact(2)) {
+        // 64 digits: two per byte, nothing left over.
+        let (pairs, _) = digits.as_chunks::<2>();
+        for (byte, pair) in bytes.iter_mut().zip(pairs) {
             let pair = std::str::from_utf8(pair).map_err(|_| invalid())?;
             *byte = u8::from_str_radix(pair, 16).map_err(|_| invalid())?;
         }
