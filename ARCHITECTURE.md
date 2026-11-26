@@ -511,8 +511,8 @@ each block having a `SAFETY:` comment.
   `scripts/sidecars.mjs` (its `beforeBuildCommand`) builds `devspaced`,
   `devspace` and `devspace-helper` in release mode for the bundle target
   and copies them to `src-tauri/binaries/<name>-<target>`.
-- macOS: `.app` and `.dmg`, ad hoc signature, macOS 12+. Windows: NSIS,
-  per user, `PATH` of the user updated by installer hooks
+- macOS: `.app` and `.dmg`, ad hoc signature, macOS 12+. Windows: NSIS
+  only (no MSI: per machine, without the `PATH` hooks), per user, `PATH` of the user updated by installer hooks
   (`src-tauri/windows/installer-hooks.nsh`). Linux: `.deb`, `.rpm`
   (programs in `/usr/bin`) and AppImage (the only Linux bundle the updater
   replaces).

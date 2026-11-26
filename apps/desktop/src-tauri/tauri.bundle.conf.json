@@ -23,6 +23,14 @@
         "installerHooks": "windows/installer-hooks.nsh"
       }
     },
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "targets": [
+      "app",
+      "dmg",
+      "nsis",
+      "deb",
+      "rpm",
+      "appimage"
+    ]
   }
 }
