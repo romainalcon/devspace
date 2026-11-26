@@ -17,6 +17,7 @@
 pub mod index;
 pub mod install;
 pub mod php;
+pub mod remote;
 
 use std::fmt;
 use std::fs;
@@ -43,11 +44,19 @@ pub enum RuntimeName {
     Php,
     /// PostgreSQL (service).
     Postgresql,
+    /// Valkey (service), built by DevSpace from the official sources.
+    Valkey,
 }
 
 impl RuntimeName {
     /// Every package, in display order.
-    pub const ALL: [Self; 4] = [Self::Mysql, Self::Node, Self::Php, Self::Postgresql];
+    pub const ALL: [Self; 5] = [
+        Self::Mysql,
+        Self::Node,
+        Self::Php,
+        Self::Postgresql,
+        Self::Valkey,
+    ];
 
     /// Lowercase name, as used in manifests, paths and commands.
     #[must_use]
@@ -57,6 +66,7 @@ impl RuntimeName {
             Self::Node => "node",
             Self::Php => "php",
             Self::Postgresql => "postgresql",
+            Self::Valkey => "valkey",
         }
     }
 
@@ -64,7 +74,7 @@ impl RuntimeName {
     /// ([`crate::service`]).
     #[must_use]
     pub const fn is_service(self) -> bool {
-        matches!(self, Self::Mysql | Self::Postgresql)
+        matches!(self, Self::Mysql | Self::Postgresql | Self::Valkey)
     }
 
     /// Parses a package name.
@@ -77,7 +87,10 @@ impl RuntimeName {
             .into_iter()
             .find(|name| name.as_str() == text)
             .ok_or_else(|| {
-                format!("unknown runtime `{text}`; expected `mysql`, `node`, `php` or `postgresql`")
+                format!(
+                    "unknown runtime `{text}`; expected `mysql`, `node`, `php`, `postgresql` or \
+                     `valkey`"
+                )
             })
     }
 }

@@ -58,8 +58,9 @@ pub const PUBLIC_KEY: &str = include_str!("../../../../registry/devspace.pub");
 /// Index format supported by this build.
 pub const INDEX_SCHEMA_VERSION: u32 = 1;
 
-/// Largest archive an index may declare.
-pub const MAX_ARCHIVE_LEN: u64 = 512 * 1024 * 1024;
+/// Largest archive an index may declare (the full MySQL archives of Linux
+/// ARM64 are close to 1 GB).
+pub const MAX_ARCHIVE_LEN: u64 = 1024 * 1024 * 1024;
 
 /// Most leading components an archive may strip.
 const MAX_STRIP_COMPONENTS: usize = 4;

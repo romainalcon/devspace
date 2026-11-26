@@ -146,6 +146,7 @@ pub(crate) async fn handle(request: Request, state: &Arc<DaemonState>) -> Respon
         }
         Request::WebStatus => web_status(state).await,
         Request::RuntimeList => runtimes::list(state).await,
+        Request::IndexRefresh => runtimes::refresh_index(state).await,
         Request::RuntimeInstall { name, version } => {
             runtimes::install(state, &name, version.as_deref()).await
         }

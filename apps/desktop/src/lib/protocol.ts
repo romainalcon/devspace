@@ -15,6 +15,7 @@ export type Request =
   | { method: "web_restart" }
   | { method: "web_status" }
   | { method: "runtime_list" }
+  | { method: "index_refresh" }
   | { method: "runtime_install"; name: string; version?: string }
   | { method: "runtime_remove"; name: string; version: string }
   | { method: "runtime_env"; directory: string }
@@ -128,6 +129,10 @@ export interface RuntimeVersionInfo {
 
 export interface RuntimeList {
   index_serial: number;
+  /** `embedded` in the build or `downloaded` from the releases. */
+  index_source: "embedded" | "downloaded";
+  /** Why the last download of the published index failed. */
+  index_error?: string;
   platform: string;
   versions: RuntimeVersionInfo[];
 }

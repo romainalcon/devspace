@@ -1,0 +1,155 @@
+name: Release
+
+# Builds the desktop bundles (with devspaced, devspace and devspace-helper)
+# for every platform when a version tag `vX.Y.Z` is pushed, and attaches
+# them to a draft GitHub release with the update manifest `latest.json`.
+# The maintainer reviews the draft, then publishes it: the application
+# updater only sees published releases.
+#
+# Secrets:
+# - TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD (required):
+#   the updater key (`tauri signer generate`), whose public key is in
+#   `apps/desktop/src-tauri/tauri.conf.json`.
+# - APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+#   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID (optional): Developer ID signing
+#   and notarisation; without them the macOS bundles are signed ad hoc.
+# - WINDOWS_CERTIFICATE (base64 PFX), WINDOWS_CERTIFICATE_PASSWORD
+#   (optional): Authenticode signing; without them Windows bundles are
+#   unsigned.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    name: bundle (${{ matrix.name }})
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS ARM64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - name: macOS x86_64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+          - name: Linux x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - name: Linux ARM64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - name: Windows x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag against the workspace version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match the workspace version ${version}" >&2
+            exit 1
+          fi
+
+      - name: Install Tauri system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - run: npm ci
+        working-directory: apps/desktop
+
+      # Only the secrets that exist are exported: an empty variable would
+      # replace the ad hoc signature of `tauri.bundle.conf.json`.
+      - name: Enable Apple signing when configured
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                      APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            value=${!name}
+            if [ -n "$value" ]; then
+              {
+                echo "$name<<DEVSPACE_EOF"
+                echo "$value"
+                echo "DEVSPACE_EOF"
+              } >> "$GITHUB_ENV"
+            fi
+          done
+
+      - name: Enable Windows signing when configured
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $config = "apps/desktop/src-tauri/signing.conf.json"
+          if ($env:WINDOWS_CERTIFICATE) {
+            $pfx = Join-Path $env:RUNNER_TEMP "certificate.pfx"
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+            $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+            $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+            Remove-Item $pfx
+            @{ bundle = @{ windows = @{ certificateThumbprint = $cert.Thumbprint; digestAlgorithm = "sha256"; timestampUrl = "http://timestamp.digicert.com" } } } |
+              ConvertTo-Json -Depth 4 | Set-Content $config
+          } else {
+            "{}" | Set-Content $config
+          }
+
+      - name: Default signing configuration
+        if: runner.os != 'Windows'
+        run: echo '{}' > apps/desktop/src-tauri/signing.conf.json
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/desktop
+          tauriScript: npx tauri
+          args: >-
+            --target ${{ matrix.target }}
+            --config src-tauri/tauri.bundle.conf.json
+            --config src-tauri/signing.conf.json
+          tagName: ${{ github.ref_name }}
+          releaseName: DevSpace ${{ github.ref_name }}
+          releaseBody: See the assets below. macOS and Windows builds are not signed with a developer certificate yet.
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true

@@ -27,3 +27,7 @@
 # Temporary files
 *.tmp
 *.log
+
+# Desktop bundle: sidecars built by apps/desktop/scripts/sidecars.mjs
+/apps/desktop/src-tauri/binaries/
+/apps/desktop/src-tauri/signing.conf.json

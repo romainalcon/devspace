@@ -193,6 +193,18 @@ pub enum PlatformError {
         path: PathBuf,
     },
 
+    /// A system directory that must only be writable by the administrator
+    /// is not.
+    #[error(
+        "`{}` must be a directory owned by the administrator and writable by it only; \
+         refusing to install the helper there",
+        path.display()
+    )]
+    InsecureSystemDirectory {
+        /// Directory path.
+        path: PathBuf,
+    },
+
     /// A system command could not be run or failed.
     #[error("`{command}` failed: {detail}")]
     SystemCommand {

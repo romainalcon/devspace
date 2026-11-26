@@ -14,7 +14,7 @@ use sha2::{Digest as _, Sha256};
 use crate::{Error, Result};
 
 /// Time limit of a whole download.
-pub const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+pub const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(25 * 60);
 
 /// Downloads `url` into `dest` (created or truncated), refusing more than
 /// `max_len` bytes. Blocking.

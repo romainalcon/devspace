@@ -28,6 +28,7 @@ use clap::Parser;
 use devspace_core::config::GlobalConfig;
 use devspace_core::db::Database;
 use devspace_core::logging::{self, LogFile, LogTargets};
+use devspace_core::runtime::remote::IndexStore;
 use devspace_core::runtime::{self as runtime_packages, RuntimeLayout};
 use devspace_core::service::ServiceLayout;
 use devspace_core::web::WebLayout;
@@ -109,14 +110,22 @@ fn run(args: &Args) -> Result<(), DaemonError> {
         sites_address,
         &installed,
     );
-    let runtimes = runtimes::Runtimes::new(runtime_layout);
+    let runtimes = runtimes::Runtimes::new(runtime_layout, IndexStore::new(&paths));
+    let remote_index = config.packages.remote_index;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("devspaced-worker")
         .build()
         .map_err(DaemonError::Runtime)?;
-    let result = runtime.block_on(server::run(&paths, db, web, runtimes, services));
+    let result = runtime.block_on(server::run(
+        &paths,
+        db,
+        web,
+        runtimes,
+        services,
+        remote_index,
+    ));
     // Cancel any remaining task, and close the database, before releasing
     // the lock.
     drop(runtime);

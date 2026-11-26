@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeBuildCommand": "npm run build && node scripts/sidecars.mjs"
+  },
+  "bundle": {
+    "externalBin": [
+      "binaries/devspaced",
+      "binaries/devspace",
+      "binaries/devspace-helper"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "Local development environments",
+    "publisher": "Romain Alcon",
+    "copyright": "© 2026 Romain Alcon",
+    "macOS": {
+      "signingIdentity": "-",
+      "minimumSystemVersion": "12.0"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "windows/installer-hooks.nsh"
+      }
+    },
+    "createUpdaterArtifacts": true
+  }
+}

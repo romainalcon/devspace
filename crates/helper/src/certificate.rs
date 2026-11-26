@@ -95,7 +95,7 @@ impl Certificate {
     /// SHA-256 fingerprint of the DER encoding.
     #[must_use]
     pub fn fingerprint(&self) -> Fingerprint {
-        Fingerprint(Sha256::digest(&self.der).into())
+        Fingerprint::of(&self.der)
     }
 
     /// PEM encoding, with 64-character lines.
@@ -125,6 +125,12 @@ impl Certificate {
 pub struct Fingerprint([u8; 32]);
 
 impl Fingerprint {
+    /// SHA-256 of `data` (also used for the helper program itself).
+    #[must_use]
+    pub fn of(data: &[u8]) -> Self {
+        Self(Sha256::digest(data).into())
+    }
+
     /// Raw digest.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {

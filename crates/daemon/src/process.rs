@@ -10,9 +10,11 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use devspace_core::service::process::Invocation;
 use devspace_ipc::WebServerState;
 use devspace_platform::process::StopRequest;
 use tokio::process::Child;
@@ -72,6 +74,9 @@ pub(crate) struct ChildInfo {
     pub(crate) log: PathBuf,
     /// How it is stopped.
     pub(crate) stop: StopPolicy,
+    /// Program asking it to stop, run instead of the stop request where
+    /// the platform has no stop signal (Windows).
+    pub(crate) stop_command: Option<Invocation>,
 }
 
 impl Supervised {
@@ -98,6 +103,27 @@ impl Supervised {
     }
 }
 
+/// Runs `command` (e.g. `mysqladmin shutdown`) and waits for it.
+async fn run_stop_command(command: &Invocation, timeout: Duration) -> Result<(), String> {
+    let mut child = tokio::process::Command::new(&command.program)
+        .args(&command.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|err| format!("cannot run `{}`: {err}", command.program.display()))?;
+    match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) if status.success() => Ok(()),
+        Ok(Ok(status)) => Err(format!("`{}` failed ({status})", command.program.display())),
+        Ok(Err(err)) => Err(err.to_string()),
+        Err(_) => Err(format!(
+            "`{}` did not finish in time",
+            command.program.display()
+        )),
+    }
+}
+
 /// Owns `child` until it exits.
 async fn monitor(
     mut child: Child,
@@ -111,6 +137,7 @@ async fn monitor(
         pid_file,
         log,
         stop: policy,
+        stop_command,
     } = info;
     tokio::select! {
         status = child.wait() => {
@@ -125,7 +152,12 @@ async fn monitor(
             set_state(&state, WebServerState::Failed { message });
         }
         _ = stop => {
-            if let Err(err) = devspace_platform::process::request_stop_with(pid, policy.request) {
+            let asked = match &stop_command {
+                Some(command) => run_stop_command(command, policy.timeout).await,
+                None => devspace_platform::process::request_stop_with(pid, policy.request)
+                    .map_err(|err| err.to_string()),
+            };
+            if let Err(err) = asked {
                 tracing::warn!(pid, error = %err, "failed to ask the {name} to stop");
             }
             if tokio::time::timeout(policy.timeout, child.wait()).await.is_err() {

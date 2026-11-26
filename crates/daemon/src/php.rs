@@ -206,6 +206,7 @@ impl PhpPools {
                 pid_file: fpm.pid_file.clone(),
                 log: fpm.log_file.clone(),
                 stop: StopPolicy::DEFAULT,
+                stop_command: None,
             },
             Arc::clone(state),
         ))

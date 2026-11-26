@@ -23,7 +23,7 @@ pub enum ServiceCommand {
     /// Download, verify and install a version of a service (same as
     /// `devspace runtime install`).
     Install {
-        /// Service: `mysql` or `postgresql`.
+        /// Service: `mysql`, `postgresql` or `valkey`.
         name: String,
         /// `MAJOR`, `MAJOR.MINOR` or `MAJOR.MINOR.PATCH`; the newest
         /// published match is installed (the newest version if absent).
@@ -31,7 +31,7 @@ pub enum ServiceCommand {
     },
     /// Start an instance and keep it running, also after a daemon restart.
     Start {
-        /// Service: `mysql` or `postgresql`.
+        /// Service: `mysql`, `postgresql` or `valkey`.
         name: String,
         /// Series: `18` (PostgreSQL), `8.4` (MySQL); the newest installed
         /// one if absent.
@@ -40,7 +40,7 @@ pub enum ServiceCommand {
     /// Stop an instance and keep it stopped, even if projects require it,
     /// until it is started again.
     Stop {
-        /// Service: `mysql` or `postgresql`.
+        /// Service: `mysql`, `postgresql` or `valkey`.
         name: String,
         /// Series; every series of the service if absent.
         series: Option<String>,

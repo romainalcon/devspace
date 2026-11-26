@@ -60,11 +60,12 @@ pub enum CliError {
 
     /// The privileged helper failed (or the user did not authenticate).
     #[error(
-        "`devspace-helper {operation}` failed ({status}); the changes listed before it were applied"
+        "{} failed ({status}); the changes listed before it were applied",
+        operation.as_deref().unwrap_or("a privileged change")
     )]
     HelperFailed {
-        /// Operation that failed.
-        operation: &'static str,
+        /// Helper command that failed, when known.
+        operation: Option<String>,
         /// Exit status of sudo / the helper.
         status: ExitStatus,
     },

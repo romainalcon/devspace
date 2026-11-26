@@ -46,6 +46,8 @@ pub struct GlobalConfig {
     pub web: WebConfig,
     /// Services (databases).
     pub services: ServicesConfig,
+    /// Package index.
+    pub packages: PackagesConfig,
 }
 
 impl Default for GlobalConfig {
@@ -55,6 +57,7 @@ impl Default for GlobalConfig {
             logging: LoggingConfig::default(),
             web: WebConfig::default(),
             services: ServicesConfig::default(),
+            packages: PackagesConfig::default(),
         }
     }
 }
@@ -123,6 +126,8 @@ pub struct ServicesConfig {
     pub mysql_port: u16,
     /// TCP port of PostgreSQL.
     pub postgresql_port: u16,
+    /// TCP port of Valkey.
+    pub valkey_port: u16,
 }
 
 impl Default for ServicesConfig {
@@ -130,6 +135,7 @@ impl Default for ServicesConfig {
         Self {
             mysql_port: 3306,
             postgresql_port: 5432,
+            valkey_port: 6379,
         }
     }
 }
@@ -138,19 +144,40 @@ impl ServicesConfig {
     /// Checks that the ports are unprivileged, distinct, and not used by
     /// the web server on the same address.
     fn validate(&self, web: &WebConfig) -> std::result::Result<(), &'static str> {
-        if self.mysql_port < 1024 || self.postgresql_port < 1024 {
+        let ports = [self.mysql_port, self.postgresql_port, self.valkey_port];
+        if ports.iter().any(|port| *port < 1024) {
             return Err("service ports must be at least 1024 (DevSpace never runs privileged)");
         }
-        if self.mysql_port == self.postgresql_port {
-            return Err("services.mysql_port and services.postgresql_port must differ");
+        if ports[0] == ports[1] || ports[0] == ports[2] || ports[1] == ports[2] {
+            return Err(
+                "services.mysql_port, services.postgresql_port and services.valkey_port must \
+                 differ",
+            );
         }
-        if [self.mysql_port, self.postgresql_port]
+        if ports
             .iter()
             .any(|port| *port == web.http_port || *port == web.https_port)
         {
             return Err("service ports must differ from the web server ports");
         }
         Ok(())
+    }
+}
+
+/// Package index settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PackagesConfig {
+    /// Whether the daemon downloads the index published with the DevSpace
+    /// releases (at startup and every six hours) to learn about new
+    /// versions; the embedded index is used otherwise. Only an index signed
+    /// with the DevSpace key and newer than the one in use is accepted.
+    pub remote_index: bool,
+}
+
+impl Default for PackagesConfig {
+    fn default() -> Self {
+        Self { remote_index: true }
     }
 }
 

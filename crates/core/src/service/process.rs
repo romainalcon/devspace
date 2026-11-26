@@ -135,6 +135,36 @@ impl Instance<'_> {
                     ]);
                 }
             }
+            ServiceName::Valkey => {
+                // No configuration file: the defaults of the program, then
+                // these settings.
+                args.extend([
+                    "--bind".into(),
+                    self.address.to_string().into(),
+                    "--port".into(),
+                    self.port.to_string().into(),
+                    "--dir".into(),
+                    data.into_os_string(),
+                    "--daemonize".into(),
+                    "no".into(),
+                    // Listening on loopback only, without a password.
+                    "--protected-mode".into(),
+                    "no".into(),
+                    // Output on the standard output, sent to the log file.
+                    "--logfile".into(),
+                    "".into(),
+                    "--pidfile".into(),
+                    "".into(),
+                ]);
+                if os != OsFamily::Windows {
+                    args.extend([
+                        "--unixsocket".into(),
+                        sockets.join("valkey.sock").into_os_string(),
+                        "--unixsocketperm".into(),
+                        "700".into(),
+                    ]);
+                }
+            }
             ServiceName::Mysql => {
                 args.push("--no-defaults".into());
                 args.push(option("basedir", &self.runtime.dir));
@@ -158,6 +188,45 @@ impl Instance<'_> {
         Ok(Invocation {
             program: self.program(self.key.service.server_program())?,
             args,
+        })
+    }
+
+    /// Command asking the server to stop gracefully, for platforms without
+    /// stop signals (Windows); `None` where a signal is sent instead
+    /// ([`ServiceName::stop_request`]).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ServiceInit`] if the installation lacks the tool.
+    pub fn stop_command(&self, os: OsFamily) -> Result<Option<Invocation>> {
+        if os != OsFamily::Windows {
+            return Ok(None);
+        }
+        Ok(match self.key.service {
+            // "fast": disconnects the clients, like `SIGINT` on Unix.
+            ServiceName::Postgresql => Some(Invocation {
+                program: self.program("pg_ctl")?,
+                args: vec![
+                    "stop".into(),
+                    "-D".into(),
+                    self.layout.data_dir(self.key).into_os_string(),
+                    "-m".into(),
+                    "fast".into(),
+                    "-W".into(),
+                ],
+            }),
+            ServiceName::Mysql => Some(Invocation {
+                program: self.program("mysqladmin")?,
+                args: vec![
+                    "--no-defaults".into(),
+                    format!("--host={}", self.address).into(),
+                    format!("--port={}", self.port).into(),
+                    format!("--user={}", ServiceName::Mysql.user()).into(),
+                    "shutdown".into(),
+                ],
+            }),
+            // Not published for Windows.
+            ServiceName::Valkey => None,
         })
     }
 
@@ -192,6 +261,8 @@ impl Instance<'_> {
                     args,
                 }]
             }
+            // An empty data directory: Valkey creates its files.
+            ServiceName::Valkey => vec![],
         })
     }
 
@@ -439,6 +510,105 @@ mod tests {
         let windows = args(&instance.server(OsFamily::Windows).unwrap());
         assert!(windows.contains(&"--console".to_owned()));
         assert!(!windows.iter().any(|arg| arg.starts_with("--socket")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn valkey_runs_without_configuration_file_and_creates_its_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (vk, layout) = setup(RuntimeName::Valkey, "9.1.4", tmp.path());
+        script(&vk.dir.join("bin/valkey-server"), "exit 0");
+        let key = InstanceKey::of(ServiceName::Valkey, vk.version);
+        assert_eq!(key.series.to_string(), "9.1");
+        let instance = Instance {
+            key,
+            runtime: &vk,
+            address: Ipv4Addr::new(127, 0, 0, 2),
+            port: 6379,
+            layout: &layout,
+        };
+        let unix = instance.server(OsFamily::MacOs).unwrap();
+        assert_eq!(unix.program, vk.dir.join("bin/valkey-server"));
+        let data = layout.data_dir(key).display().to_string();
+        let socket = layout
+            .socket_dir(key)
+            .join("valkey.sock")
+            .display()
+            .to_string();
+        assert_eq!(
+            args(&unix),
+            [
+                "--bind",
+                "127.0.0.2",
+                "--port",
+                "6379",
+                "--dir",
+                &data,
+                "--daemonize",
+                "no",
+                "--protected-mode",
+                "no",
+                "--logfile",
+                "",
+                "--pidfile",
+                "",
+                "--unixsocket",
+                &socket,
+                "--unixsocketperm",
+                "700"
+            ]
+        );
+        // The first argument is an option: no configuration file is read.
+        assert!(args(&unix)[0].starts_with("--"));
+
+        assert!(instance.initialize().unwrap());
+        assert!(layout.data_dir(key).is_dir());
+        assert!(!instance.initialize().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn windows_servers_are_stopped_by_their_tools() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (my, layout) = setup(RuntimeName::Mysql, "8.4.13.1", tmp.path());
+        script(&my.dir.join("bin/mysqladmin"), "exit 0");
+        let instance = Instance {
+            key: InstanceKey::of(ServiceName::Mysql, my.version),
+            runtime: &my,
+            address: Ipv4Addr::new(127, 0, 0, 2),
+            port: 3306,
+            layout: &layout,
+        };
+        assert!(instance.stop_command(OsFamily::MacOs).unwrap().is_none());
+        let stop = instance.stop_command(OsFamily::Windows).unwrap().unwrap();
+        assert_eq!(stop.program, my.dir.join("bin/mysqladmin"));
+        assert_eq!(
+            args(&stop),
+            [
+                "--no-defaults",
+                "--host=127.0.0.2",
+                "--port=3306",
+                "--user=root",
+                "shutdown"
+            ]
+        );
+
+        let (pg, layout) = setup(RuntimeName::Postgresql, "18.7.0", tmp.path());
+        let instance = Instance {
+            key: InstanceKey::of(ServiceName::Postgresql, pg.version),
+            runtime: &pg,
+            address: Ipv4Addr::new(127, 0, 0, 2),
+            port: 5432,
+            layout: &layout,
+        };
+        assert!(
+            instance.stop_command(OsFamily::Windows).is_err(),
+            "pg_ctl missing"
+        );
+        script(&pg.dir.join("bin/pg_ctl"), "exit 0");
+        let stop = instance.stop_command(OsFamily::Windows).unwrap().unwrap();
+        assert_eq!(args(&stop)[..2], ["stop", "-D"]);
+        assert_eq!(args(&stop)[3..], ["-m", "fast", "-W"]);
     }
 
     #[test]

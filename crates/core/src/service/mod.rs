@@ -1,10 +1,9 @@
-//! Services: databases run by the daemon (MySQL, PostgreSQL).
+//! Services: databases run by the daemon (MySQL, PostgreSQL, Valkey).
 //!
 //! The programs of a service are installed like the runtimes
-//! ([`crate::runtime`], packages `mysql` and `postgresql`). An *instance*
-//! is identified by a service and a [`Series`]: the major version of
-//! PostgreSQL, or the `MAJOR.MINOR` series of MySQL, the versions that share
-//! a data format. Each instance runs the newest installed version of its
+//! ([`crate::runtime`], packages `mysql`, `postgresql` and `valkey`). An
+//! *instance* is identified by a service and a [`Series`]: the major version
+//! of PostgreSQL, or the `MAJOR.MINOR` series of MySQL and Valkey. Each instance runs the newest installed version of its
 //! series and keeps its data in `<data>/services/<name>/<series>/`, shared
 //! by every project using it.
 //!
@@ -18,7 +17,8 @@
 //!   lines of the servers.
 //!
 //! Servers listen on the loopback address of the sites only, and accept
-//! their administrator (`root`, `postgres`) without a password: they are
+//! their administrator (`root`, `postgres`, Valkey's `default` user)
+//! without a password: they are
 //! development databases, never reachable from the network.
 
 pub mod process;
@@ -44,11 +44,13 @@ pub enum ServiceName {
     Mysql,
     /// PostgreSQL.
     Postgresql,
+    /// Valkey (key-value store compatible with Redis).
+    Valkey,
 }
 
 impl ServiceName {
     /// Every service, in display order.
-    pub const ALL: [Self; 2] = [Self::Mysql, Self::Postgresql];
+    pub const ALL: [Self; 3] = [Self::Mysql, Self::Postgresql, Self::Valkey];
 
     /// Lowercase name, as used in manifests, paths and commands; also the
     /// name of its package.
@@ -63,6 +65,7 @@ impl ServiceName {
         match self {
             Self::Mysql => RuntimeName::Mysql,
             Self::Postgresql => RuntimeName::Postgresql,
+            Self::Valkey => RuntimeName::Valkey,
         }
     }
 
@@ -72,6 +75,7 @@ impl ServiceName {
         match package {
             RuntimeName::Mysql => Some(Self::Mysql),
             RuntimeName::Postgresql => Some(Self::Postgresql),
+            RuntimeName::Valkey => Some(Self::Valkey),
             RuntimeName::Node | RuntimeName::Php => None,
         }
     }
@@ -85,7 +89,9 @@ impl ServiceName {
         Self::ALL
             .into_iter()
             .find(|name| name.as_str() == text)
-            .ok_or_else(|| format!("unknown service `{text}`; expected `mysql` or `postgresql`"))
+            .ok_or_else(|| {
+                format!("unknown service `{text}`; expected `mysql`, `postgresql` or `valkey`")
+            })
     }
 
     /// TCP port of the service.
@@ -94,6 +100,7 @@ impl ServiceName {
         match self {
             Self::Mysql => config.mysql_port,
             Self::Postgresql => config.postgresql_port,
+            Self::Valkey => config.valkey_port,
         }
     }
 
@@ -103,15 +110,17 @@ impl ServiceName {
         match self {
             Self::Mysql => "root",
             Self::Postgresql => "postgres",
+            Self::Valkey => "default",
         }
     }
 
     /// How the server is asked to stop: PostgreSQL waits for its clients
-    /// to disconnect on `SIGTERM`, `SIGINT` disconnects them.
+    /// to disconnect on `SIGTERM`, `SIGINT` disconnects them. Valkey saves
+    /// its data on `SIGTERM`.
     #[must_use]
     pub const fn stop_request(self) -> StopRequest {
         match self {
-            Self::Mysql => StopRequest::Terminate,
+            Self::Mysql | Self::Valkey => StopRequest::Terminate,
             Self::Postgresql => StopRequest::Interrupt,
         }
     }
@@ -122,6 +131,7 @@ impl ServiceName {
         match self {
             Self::Mysql => "mysqld",
             Self::Postgresql => "postgres",
+            Self::Valkey => "valkey-server",
         }
     }
 
@@ -130,7 +140,8 @@ impl ServiceName {
     #[must_use]
     pub fn client_variables(self, address: Ipv4Addr, port: u16) -> Vec<(String, String)> {
         // The MySQL clients have no variable for the user name: they need
-        // `-u root`.
+        // `-u root`. `valkey-cli` reads no variable for its host and port
+        // (`REDIS_HOST` would override the `.env` of Laravel projects).
         let vars = match self {
             Self::Mysql => vec![
                 ("MYSQL_HOST", address.to_string()),
@@ -141,6 +152,7 @@ impl ServiceName {
                 ("PGPORT", port.to_string()),
                 ("PGUSER", self.user().to_owned()),
             ],
+            Self::Valkey => vec![],
         };
         vars.into_iter()
             .map(|(name, value)| (name.to_owned(), value))
@@ -155,12 +167,12 @@ impl fmt::Display for ServiceName {
 }
 
 /// Versions of a service sharing a data format: `MAJOR` for PostgreSQL,
-/// `MAJOR.MINOR` for MySQL.
+/// `MAJOR.MINOR` for MySQL and Valkey.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Series {
     /// Major version.
     pub major: u32,
-    /// Minor version (MySQL only).
+    /// Minor version (MySQL and Valkey).
     pub minor: Option<u32>,
 }
 
@@ -171,7 +183,7 @@ impl Series {
         Self {
             major: version.major,
             minor: match service {
-                ServiceName::Mysql => Some(version.minor),
+                ServiceName::Mysql | ServiceName::Valkey => Some(version.minor),
                 ServiceName::Postgresql => None,
             },
         }
@@ -195,7 +207,7 @@ impl Series {
                 }),
             ) => Some(Self { major, minor: None }),
             (
-                ServiceName::Mysql,
+                ServiceName::Mysql | ServiceName::Valkey,
                 Some(VersionReq {
                     major,
                     minor: Some(minor),
@@ -217,6 +229,9 @@ impl Series {
             ServiceName::Mysql => {
                 format!("invalid MySQL series `{text}`; expected MAJOR.MINOR, such as `8.4`")
             }
+            ServiceName::Valkey => {
+                format!("invalid Valkey series `{text}`; expected MAJOR.MINOR, such as `9.1`")
+            }
         })
     }
 
@@ -230,11 +245,11 @@ impl Series {
                 major: req.major,
                 minor: None,
             }),
-            (ServiceName::Mysql, Some(minor)) => Some(Self {
+            (ServiceName::Mysql | ServiceName::Valkey, Some(minor)) => Some(Self {
                 major: req.major,
                 minor: Some(minor),
             }),
-            (ServiceName::Mysql, None) => None,
+            (ServiceName::Mysql | ServiceName::Valkey, None) => None,
         }
     }
 

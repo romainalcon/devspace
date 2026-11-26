@@ -76,7 +76,7 @@ function stop(i: ServiceInstanceInfo) {
           v-if="services && services.instances.length === 0"
           class="text-muted-foreground rounded-xl border border-dashed p-8 text-center text-sm"
         >
-          No service yet. Install PostgreSQL or MySQL below, or require one in a project's
+          No service yet. Install PostgreSQL, MySQL or Valkey below, or require one in a project's
           <code>devspace.toml</code> (<code>[services] postgresql = "18"</code>).
         </div>
 

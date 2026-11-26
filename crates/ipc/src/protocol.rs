@@ -29,7 +29,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 /// Version of the protocol implemented by this build.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Name and version of a program taking part in a connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +143,10 @@ pub enum Request {
     /// Runtime versions published for this platform and installed,
     /// answered by [`Response::Runtimes`].
     RuntimeList,
+    /// Downloads the package index published with the DevSpace releases and
+    /// uses it if it is signed and newer, answered by
+    /// [`Response::Runtimes`].
+    IndexRefresh,
     /// Downloads, verifies and installs a runtime version, answered by
     /// [`Response::RuntimeInstalled`]. May take minutes.
     RuntimeInstall {
@@ -173,7 +177,7 @@ pub enum Request {
     /// Starts a service instance and keeps it running across daemon
     /// restarts, answered by [`Response::Services`].
     ServiceStart {
-        /// Service name (`mysql`, `postgresql`).
+        /// Service name (`mysql`, `postgresql`, `valkey`).
         name: String,
         /// Series (`18`, `8.4`); absent: the newest installed one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -211,9 +215,10 @@ impl Request {
             Self::WebStart | Self::WebStop | Self::WebRestart | Self::WebStatus => 45,
             // Download of about 20 MB.
             Self::WebInstall => 15 * MINUTE,
-            // Downloads of up to a few hundred MB.
-            Self::RuntimeInstall { .. } => 30 * MINUTE,
+            // Downloads of up to 1 GB (25 min each at most).
+            Self::RuntimeInstall { .. } => 45 * MINUTE,
             Self::RuntimeList
+            | Self::IndexRefresh
             | Self::RuntimeRemove { .. }
             | Self::RuntimeEnv { .. }
             | Self::ServiceList => MINUTE,
@@ -245,7 +250,7 @@ pub enum Response {
     ProjectRemoved(ProjectInfo),
     /// Answer to the web requests: the state after the request.
     WebStatus(Box<WebStatus>),
-    /// Answer to [`Request::RuntimeList`].
+    /// Answer to [`Request::RuntimeList`] and [`Request::IndexRefresh`].
     Runtimes(RuntimeList),
     /// Answer to [`Request::RuntimeInstall`].
     RuntimeInstalled(RuntimeInfo),
@@ -344,6 +349,12 @@ pub struct PhpPoolInfo {
 pub struct RuntimeList {
     /// Serial of the package index.
     pub index_serial: u64,
+    /// Where the index comes from: `embedded` in the build, or
+    /// `downloaded` from the releases.
+    pub index_source: String,
+    /// Why the last download of the published index failed, if it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_error: Option<String>,
     /// Platform key of the index, e.g. `macos-aarch64`.
     pub platform: String,
     /// Every published or installed version, sorted by name then version.
@@ -848,6 +859,7 @@ mod tests {
     #[test]
     fn runtime_wire_format() {
         assert_wire(&Request::RuntimeList, &json!({"method": "runtime_list"}));
+        assert_wire(&Request::IndexRefresh, &json!({"method": "index_refresh"}));
         assert_wire(
             &Request::RuntimeInstall {
                 name: "php".into(),
@@ -878,6 +890,8 @@ mod tests {
         assert_wire(
             &Response::Runtimes(RuntimeList {
                 index_serial: 1,
+                index_source: "embedded".into(),
+                index_error: None,
                 platform: "macos-aarch64".into(),
                 versions: vec![RuntimeVersionInfo {
                     name: "node".into(),
@@ -886,7 +900,8 @@ mod tests {
                     path: None,
                 }],
             }),
-            &json!({"kind": "runtimes", "index_serial": 1, "platform": "macos-aarch64",
+            &json!({"kind": "runtimes", "index_serial": 1, "index_source": "embedded",
+                    "platform": "macos-aarch64",
                     "versions": [{"name": "node", "version": "24.22.3", "available": true,
                                   "path": null}]}),
         );

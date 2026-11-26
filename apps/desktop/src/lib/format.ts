@@ -67,6 +67,7 @@ const PACKAGE_NAMES: Record<string, string> = {
   node: "Node.js",
   postgresql: "PostgreSQL",
   mysql: "MySQL",
+  valkey: "Valkey",
 };
 
 export function packageName(name: string): string {
@@ -77,7 +78,7 @@ export function packageName(name: string): string {
  * Packages providing the service servers, shown on the Services page
  * rather than with the language runtimes (`devspace service install`).
  */
-export const SERVICE_PACKAGES: readonly string[] = ["postgresql", "mysql"];
+export const SERVICE_PACKAGES: readonly string[] = ["postgresql", "mysql", "valkey"];
 
 export function formatDate(epochSecs: number): string {
   return new Date(epochSecs * 1000).toLocaleDateString(undefined, {

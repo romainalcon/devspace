@@ -20,6 +20,7 @@
 //! [services]        # services the project uses, started by the daemon:
 //! postgresql = "18" # MAJOR (PostgreSQL) or MAJOR.MINOR (MySQL series),
 //! mysql = "8.4"     # matched like the runtimes
+//! valkey = "9.1"    # MAJOR.MINOR (Valkey series)
 //! ```
 //!
 //! Every key is optional and unknown keys are rejected. DevSpace only reads
@@ -92,7 +93,7 @@ impl ManifestRuntimes {
         match name {
             RuntimeName::Node => self.node,
             RuntimeName::Php => self.php,
-            RuntimeName::Mysql | RuntimeName::Postgresql => None,
+            RuntimeName::Mysql | RuntimeName::Postgresql | RuntimeName::Valkey => None,
         }
     }
 }
@@ -107,6 +108,8 @@ pub struct ManifestServices {
     pub mysql: Option<VersionReq>,
     /// PostgreSQL versions accepted.
     pub postgresql: Option<VersionReq>,
+    /// Valkey versions accepted.
+    pub valkey: Option<VersionReq>,
 }
 
 impl ManifestServices {
@@ -117,6 +120,7 @@ impl ManifestServices {
         match name {
             RuntimeName::Mysql => self.mysql,
             RuntimeName::Postgresql => self.postgresql,
+            RuntimeName::Valkey => self.valkey,
             RuntimeName::Node | RuntimeName::Php => None,
         }
     }

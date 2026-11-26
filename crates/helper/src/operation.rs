@@ -7,12 +7,17 @@
 //! devspace-helper remove-port-forwarding --address <IP>
 //! devspace-helper trust-certificate --sha256 <FINGERPRINT>    (PEM on stdin)
 //! devspace-helper untrust-certificate --sha256 <FINGERPRINT>  (PEM on stdin)
+//! devspace-helper install-helper --sha256 <SHA-256>
+//! devspace-helper remove-helper
+//! devspace-helper link-cli --target <PATH>
+//! devspace-helper unlink-cli
 //! ```
 //!
 //! The encoding is strict: one operation, its options in this order, no
 //! other argument.
 
 use std::fmt;
+use std::path::PathBuf;
 
 use crate::certificate::Fingerprint;
 use crate::local::{LoopbackAddress, Tld};
@@ -59,6 +64,22 @@ pub enum Operation {
         /// Fingerprint approved by the user.
         sha256: Fingerprint,
     },
+    /// Copy the running helper, whose SHA-256 must be this one, to the
+    /// administrator-only location of the installed helper.
+    InstallHelper {
+        /// SHA-256 of the helper approved by the user.
+        sha256: Fingerprint,
+    },
+    /// Remove the installed helper.
+    RemoveHelper,
+    /// Make `devspace` available in every shell by linking it to `target`,
+    /// the CLI of an application bundle.
+    LinkCli {
+        /// Absolute path of the bundled CLI.
+        target: PathBuf,
+    },
+    /// Remove the link created by [`Operation::LinkCli`].
+    UnlinkCli,
 }
 
 /// Malformed helper command line.
@@ -74,7 +95,11 @@ impl Operation {
   devspace-helper install-port-forwarding --address <IP> --http-port <PORT> --https-port <PORT>
   devspace-helper remove-port-forwarding --address <IP>
   devspace-helper trust-certificate --sha256 <FINGERPRINT>    (PEM certificate on stdin)
-  devspace-helper untrust-certificate --sha256 <FINGERPRINT>  (PEM certificate on stdin)";
+  devspace-helper untrust-certificate --sha256 <FINGERPRINT>  (PEM certificate on stdin)
+  devspace-helper install-helper --sha256 <SHA-256>
+  devspace-helper remove-helper
+  devspace-helper link-cli --target <PATH>
+  devspace-helper unlink-cli";
 
     /// Name of the operation on the command line.
     #[must_use]
@@ -86,6 +111,10 @@ impl Operation {
             Self::RemovePortForwarding { .. } => "remove-port-forwarding",
             Self::TrustCertificate { .. } => "trust-certificate",
             Self::UntrustCertificate { .. } => "untrust-certificate",
+            Self::InstallHelper { .. } => "install-helper",
+            Self::RemoveHelper => "remove-helper",
+            Self::LinkCli { .. } => "link-cli",
+            Self::UnlinkCli => "unlink-cli",
         }
     }
 
@@ -122,9 +151,15 @@ impl Operation {
                 "--https-port".to_owned(),
                 https_port.to_string(),
             ]),
-            Self::TrustCertificate { sha256 } | Self::UntrustCertificate { sha256 } => {
+            Self::TrustCertificate { sha256 }
+            | Self::UntrustCertificate { sha256 }
+            | Self::InstallHelper { sha256 } => {
                 args.extend(["--sha256".to_owned(), sha256.to_string()]);
             }
+            Self::LinkCli { target } => {
+                args.extend(["--target".to_owned(), target.to_string_lossy().into_owned()]);
+            }
+            Self::RemoveHelper | Self::UnlinkCli => {}
             Self::RemovePortForwarding { address } => {
                 args.extend(["--address".to_owned(), address.to_string()]);
             }
@@ -170,6 +205,20 @@ impl Operation {
             "untrust-certificate" => Self::UntrustCertificate {
                 sha256: parse_options(options, &["--sha256"])?[0].parse_fingerprint()?,
             },
+            "install-helper" => Self::InstallHelper {
+                sha256: parse_options(options, &["--sha256"])?[0].parse_fingerprint()?,
+            },
+            "remove-helper" => {
+                parse_options(options, &[])?;
+                Self::RemoveHelper
+            }
+            "link-cli" => Self::LinkCli {
+                target: parse_options(options, &["--target"])?[0].parse_absolute_path()?,
+            },
+            "unlink-cli" => {
+                parse_options(options, &[])?;
+                Self::UnlinkCli
+            }
             other => return Err(OperationError(format!("unknown operation `{other}`"))),
         };
         Ok(operation)
@@ -203,6 +252,18 @@ impl OptionValue<'_> {
         self.value
             .parse()
             .map_err(|err| OperationError(format!("{}: {err}", self.option)))
+    }
+
+    fn parse_absolute_path(&self) -> Result<PathBuf, OperationError> {
+        let path = PathBuf::from(self.value);
+        if path.is_absolute() {
+            Ok(path)
+        } else {
+            Err(OperationError(format!(
+                "{} expects an absolute path, got `{}`",
+                self.option, self.value
+            )))
+        }
     }
 
     fn parse_fingerprint(&self) -> Result<Fingerprint, OperationError> {
@@ -284,6 +345,14 @@ mod tests {
             Operation::UntrustCertificate {
                 sha256: fingerprint(),
             },
+            Operation::InstallHelper {
+                sha256: fingerprint(),
+            },
+            Operation::RemoveHelper,
+            Operation::LinkCli {
+                target: "/Applications/DevSpace.app/Contents/MacOS/devspace".into(),
+            },
+            Operation::UnlinkCli,
         ] {
             assert_eq!(
                 Operation::from_args(&operation.to_args()).unwrap(),
@@ -325,6 +394,11 @@ mod tests {
             "remove-port-forwarding --address ::1",
             "trust-certificate --sha256 abc",
             "trust-certificate /etc/passwd",
+            "install-helper",
+            "remove-helper --force yes",
+            "link-cli --target relative/devspace",
+            "link-cli",
+            "unlink-cli /usr/local/bin/devspace",
         ] {
             assert!(Operation::from_args(&args(bad)).is_err(), "{bad}");
         }

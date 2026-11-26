@@ -5,9 +5,12 @@
 //! commands to the Vue interface, starts the daemon when the application
 //! starts, and keeps an icon in the menu bar (notification area) whose menu
 //! shows the daemon state. Closing the window hides it; quitting the
-//! application leaves the daemon running.
+//! application leaves the daemon running. It also installs its own updates
+//! ([`update`]) and runs `devspace system setup|teardown` ([`system`]).
 
 pub mod daemon;
+pub mod system;
+pub mod update;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,6 +22,8 @@ use tauri::{AppHandle, Manager, RunEvent, State, WindowEvent, Wry};
 use tauri_plugin_opener::OpenerExt;
 
 use crate::daemon::{Daemon, DaemonView, DesktopError};
+use crate::system::{SystemAction, SystemOutput};
+use crate::update::UpdateInfo;
 
 /// Label of the main window (`tauri.conf.json`).
 const MAIN_WINDOW: &str = "main";
@@ -75,6 +80,33 @@ async fn reveal_project(app: AppHandle, daemon: Shared<'_>, project: String) -> 
         .map_err(|err| DesktopError::Shell(err.to_string()).report())
 }
 
+/// Changes `devspace system <action>` would make, as printed by the CLI.
+#[tauri::command]
+async fn system_plan(action: SystemAction) -> Result<SystemOutput, String> {
+    system::run(action, false).await.map_err(|err| err.report())
+}
+
+/// Applies `devspace system <action>` after the user approved the plan; the
+/// system asks for the administrator password.
+#[tauri::command]
+async fn system_apply(action: SystemAction) -> Result<SystemOutput, String> {
+    system::run(action, true).await.map_err(|err| err.report())
+}
+
+/// Available update of the application, if any.
+#[tauri::command]
+async fn update_check(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
+    update::check(&app).await.map_err(|err| err.report())
+}
+
+/// Installs the available update and restarts the application.
+#[tauri::command]
+async fn update_install(app: AppHandle, daemon: Shared<'_>) -> Result<(), String> {
+    update::install(&app, &daemon)
+        .await
+        .map_err(|err| err.report())
+}
+
 /// Builds and runs the Tauri application until it quits.
 ///
 /// # Errors
@@ -94,6 +126,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Arc::clone(&daemon))
         .invoke_handler(tauri::generate_handler![
             daemon_status,
@@ -102,6 +135,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             daemon_request,
             open_site,
             reveal_project,
+            system_plan,
+            system_apply,
+            update_check,
+            update_install,
         ])
         .setup(move |app| {
             setup_tray(app.handle(), Arc::clone(&daemon))?;
@@ -109,7 +146,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             let autostart = Arc::clone(&daemon);
             tauri::async_runtime::spawn(async move {
                 // A failure is kept in the state and shown by the interface.
-                let _ = autostart.start().await;
+                let _ = autostart.start_current().await;
             });
             Ok(())
         })

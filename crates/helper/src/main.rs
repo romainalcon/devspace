@@ -7,6 +7,12 @@
 //! integration, never touches a file that DevSpace does not manage, and only
 //! trusts a certificate whose fingerprint matches the one on its command
 //! line, which the user approved.
+//!
+//! Where the platform has an installed helper (macOS), every operation but
+//! `install-helper` must run from that administrator-owned copy: the helper
+//! of the application bundle is writable by the user, so it only ever runs
+//! with administrator rights to install the copy whose SHA-256 the user
+//! approved.
 
 use std::fmt::Write as _;
 use std::io::{self, Read as _};
@@ -16,7 +22,7 @@ use devspace_helper::{Certificate, CertificateError, Fingerprint, Operation, Ope
 use devspace_platform::PlatformError;
 use devspace_platform::fs::{FileMode, create_new};
 use devspace_platform::system::port_forwarding::Forwarding;
-use devspace_platform::system::{port_forwarding, resolver, trust_store};
+use devspace_platform::system::{cli_link, helper_install, port_forwarding, resolver, trust_store};
 
 /// Exit status for an invalid command line.
 const USAGE_EXIT_CODE: u8 = 2;
@@ -48,6 +54,21 @@ enum HelperError {
 
     #[error("failed to prepare a temporary copy of the certificate")]
     TempFile(#[source] io::Error),
+
+    #[error("failed to locate the running helper")]
+    CurrentExe(#[source] io::Error),
+
+    #[error(
+        "this helper is not the installed copy owned by the administrator ({installed}); \
+         run `devspace system setup` to install it"
+    )]
+    NotInstalledCopy { installed: String },
+
+    #[error("the running helper has SHA-256 {actual}, not the approved {expected}")]
+    HelperMismatch {
+        expected: Fingerprint,
+        actual: Fingerprint,
+    },
 }
 
 fn main() -> ExitCode {
@@ -83,7 +104,51 @@ fn run(args: &[String]) -> Result<String, HelperError> {
     if !devspace_platform::privileges::is_elevated()? {
         return Err(HelperError::NotElevated);
     }
+    let exe = std::env::current_exe().map_err(HelperError::CurrentExe)?;
+    if !matches!(operation, Operation::InstallHelper { .. })
+        && !helper_install::is_installed_copy(&exe)?
+    {
+        return Err(HelperError::NotInstalledCopy {
+            installed: helper_install::installed_path()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+        });
+    }
     match operation {
+        Operation::InstallHelper { sha256 } => {
+            let program = helper_install::read_source(&exe)?;
+            let actual = Fingerprint::of(&program);
+            if actual != sha256 {
+                return Err(HelperError::HelperMismatch {
+                    expected: sha256,
+                    actual,
+                });
+            }
+            // The bytes checked are the bytes written: swapping the file
+            // now changes nothing.
+            helper_install::install(&program)?;
+            Ok(format!(
+                "the privileged helper is installed as {}",
+                helper_install::installed_path()?.display()
+            ))
+        }
+        Operation::RemoveHelper => Ok(if helper_install::remove()? {
+            "the privileged helper is removed".to_owned()
+        } else {
+            "the privileged helper was not installed".to_owned()
+        }),
+        Operation::LinkCli { target } => {
+            cli_link::install(&target)?;
+            Ok(format!(
+                "`devspace` is now available as {}",
+                cli_link::link_path()?.display()
+            ))
+        }
+        Operation::UnlinkCli => Ok(if cli_link::remove()? {
+            "the `devspace` command is removed".to_owned()
+        } else {
+            "the `devspace` command was not linked".to_owned()
+        }),
         Operation::InstallResolver { tld, port } => {
             resolver::install(tld.as_str(), port)?;
             Ok(format!(

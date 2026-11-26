@@ -7,14 +7,18 @@
 //! with a file DevSpace does not manage, or when the user declines.
 
 use std::io::{self, BufRead as _, IsTerminal as _, Write as _};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use devspace_core::AppPaths;
-use devspace_helper::{Certificate, HELPER_NAME, LoopbackAddress, Operation, Tld};
+use devspace_helper::{Certificate, Fingerprint, HELPER_NAME, LoopbackAddress, Operation, Tld};
 use devspace_ipc::{Endpoint, IntegrationStatus, Request, WebServerState, WebStatus};
+use devspace_platform::PlatformError;
+use devspace_platform::system::elevation::{self, ElevatedCommand, Elevation};
 use devspace_platform::system::port_forwarding::{self, Forwarding};
-use devspace_platform::system::{elevation, resolver, trust_store};
+use devspace_platform::system::{
+    IntegrationState, cli_link, helper_install, resolver, trust_store,
+};
 use devspace_platform::target::executable_name;
 
 use crate::client;
@@ -25,20 +29,44 @@ use crate::web;
 #[derive(Debug, Clone, Copy, clap::Subcommand)]
 pub enum SystemCommand {
     /// Install the local DNS resolver, the loopback address of the sites
-    /// with the forwarding of its ports 80/443, and the trust of the local
-    /// certificate authority (asks for approval, then for your password
-    /// through sudo).
+    /// with the forwarding of its ports 80/443, the trust of the local
+    /// certificate authority and, on macOS, the administrator-owned copy of
+    /// the privileged helper and the `devspace` command of the application
+    /// (asks for approval, then for your password through sudo).
     Setup {
-        /// Do not ask for confirmation.
-        #[arg(long)]
-        yes: bool,
+        #[command(flatten)]
+        options: Options,
     },
     /// Remove everything `setup` installed.
     Teardown {
-        /// Do not ask for confirmation.
-        #[arg(long)]
-        yes: bool,
+        #[command(flatten)]
+        options: Options,
     },
+}
+
+/// Options shared by `setup` and `teardown`.
+#[derive(Debug, Clone, Copy, clap::Args)]
+pub struct Options {
+    /// Do not ask for confirmation.
+    #[arg(long)]
+    yes: bool,
+    /// Only show the changes, without making them.
+    #[arg(long, conflicts_with = "yes")]
+    dry_run: bool,
+    /// Ask for the administrator password with the system dialog instead of
+    /// sudo (macOS; used by the desktop application).
+    #[arg(long)]
+    graphical: bool,
+}
+
+impl Options {
+    const fn elevation(self) -> Elevation {
+        if self.graphical {
+            Elevation::Graphical
+        } else {
+            Elevation::Terminal
+        }
+    }
 }
 
 /// One privileged change.
@@ -52,19 +80,89 @@ pub struct Step {
     pub certificate: Option<String>,
 }
 
+/// The programs next to the running CLI and their installed counterparts.
+#[derive(Debug, Clone)]
+pub struct LocalInstall {
+    /// Helper next to the CLI.
+    bundled_helper: PathBuf,
+    /// Installed copy of the helper; `None` on platforms without one.
+    helper: Option<HelperCopy>,
+    /// Link of the `devspace` command; `None` when the CLI is not that of an
+    /// application bundle or the platform does not link it.
+    cli_link: Option<CliLink>,
+}
+
+#[derive(Debug, Clone)]
+struct HelperCopy {
+    installed: PathBuf,
+    state: IntegrationState,
+    sha256: Fingerprint,
+}
+
+#[derive(Debug, Clone)]
+struct CliLink {
+    target: PathBuf,
+    state: IntegrationState,
+}
+
+impl LocalInstall {
+    /// Inspects the helper and the CLI of the running installation.
+    fn detect() -> Result<Self, CliError> {
+        let cli = std::env::current_exe().map_err(CliError::CurrentExe)?;
+        let bundled_helper = cli.with_file_name(executable_name(HELPER_NAME));
+        if !bundled_helper.is_file() {
+            return Err(CliError::HelperNotFound {
+                path: bundled_helper,
+            });
+        }
+        let helper = match helper_install::installed_path() {
+            Ok(installed) => Some(HelperCopy {
+                installed,
+                state: helper_install::state(&bundled_helper)?,
+                sha256: Fingerprint::of(&helper_install::read_source(&bundled_helper)?),
+            }),
+            Err(PlatformError::Unsupported { .. }) => None,
+            Err(err) => return Err(err.into()),
+        };
+        let cli_link = if cli_link::is_bundled_cli(&cli) && cli_link::link_path().is_ok() {
+            Some(CliLink {
+                state: cli_link::state(&cli)?,
+                target: cli,
+            })
+        } else {
+            None
+        };
+        Ok(Self {
+            bundled_helper,
+            helper,
+            cli_link,
+        })
+    }
+
+    /// Program running `operation`: the installed helper, except to install
+    /// it (or where there is none).
+    fn program_for(&self, operation: &Operation) -> &Path {
+        match (&self.helper, operation) {
+            (Some(copy), op) if !matches!(op, Operation::InstallHelper { .. }) => &copy.installed,
+            _ => &self.bundled_helper,
+        }
+    }
+}
+
 /// Runs a system subcommand.
 pub fn execute(command: SystemCommand, paths: &AppPaths) -> Result<ExitCode, CliError> {
     let endpoint = Endpoint::new(&paths.runtime_dir)?;
     let status = client::block_on(web::fetch(&endpoint, Request::WebStatus))??;
+    let local = LocalInstall::detect()?;
     match command {
-        SystemCommand::Setup { yes } => setup(&endpoint, &status, yes),
-        SystemCommand::Teardown { yes } => {
-            let plan = teardown_plan(&status)?;
+        SystemCommand::Setup { options } => setup(&endpoint, &status, &local, options),
+        SystemCommand::Teardown { options } => {
+            let plan = teardown_plan(&status, &local)?;
             if plan.is_empty() {
                 println!("nothing to do");
                 return Ok(ExitCode::SUCCESS);
             }
-            apply(&plan, yes)
+            apply(&plan, &local, options)
         }
     }
 }
@@ -73,8 +171,13 @@ pub fn execute(command: SystemCommand, paths: &AppPaths) -> Result<ExitCode, Cli
 /// network integrations first, then (once the web server could start on
 /// the sites address and create the CA) the trust of the CA, approved
 /// separately with its fingerprint.
-fn setup(endpoint: &Endpoint, status: &WebStatus, yes: bool) -> Result<ExitCode, CliError> {
-    let plan = setup_plan(status)?;
+fn setup(
+    endpoint: &Endpoint,
+    status: &WebStatus,
+    local: &LocalInstall,
+    options: Options,
+) -> Result<ExitCode, CliError> {
+    let plan = setup_plan(status, local)?;
     let waits_for_ca = trust_waits_for_ca(status);
     if waits_for_ca && !status.caddy_installed {
         return Err(CliError::SetupBlocked {
@@ -87,8 +190,20 @@ fn setup(endpoint: &Endpoint, status: &WebStatus, yes: bool) -> Result<ExitCode,
         println!("nothing to do");
         return Ok(ExitCode::SUCCESS);
     }
+    if options.dry_run {
+        if !plan.is_empty() {
+            show(&plan, local, options.elevation());
+        }
+        if waits_for_ca {
+            println!(
+                "Then, once the web server created the local certificate authority, DevSpace \
+                 will ask to trust it, showing its fingerprint."
+            );
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
     if !plan.is_empty() {
-        let code = apply(&plan, yes)?;
+        let code = apply(&plan, local, options)?;
         if code != ExitCode::SUCCESS {
             return Ok(code);
         }
@@ -101,7 +216,9 @@ fn setup(endpoint: &Endpoint, status: &WebStatus, yes: bool) -> Result<ExitCode,
         status = client::block_on(web::fetch(endpoint, Request::WebStart))??;
     }
     if waits_for_ca {
-        let plan = setup_plan(&status)?;
+        // The helper may have been installed by the first phase.
+        let local = LocalInstall::detect()?;
+        let plan = setup_plan(&status, &local)?;
         if plan.is_empty() {
             return Err(CliError::SetupBlocked {
                 reason: "the web server did not create the local certificate authority; see \
@@ -109,39 +226,78 @@ fn setup(endpoint: &Endpoint, status: &WebStatus, yes: bool) -> Result<ExitCode,
                     .to_owned(),
             });
         }
-        return apply(&plan, yes);
+        return apply(&plan, &local, options);
     }
     println!("done; check with `devspace web status`");
     Ok(ExitCode::SUCCESS)
 }
 
-/// Shows `plan`, asks for approval and runs each step through the helper.
-fn apply(plan: &[Step], yes: bool) -> Result<ExitCode, CliError> {
-    let helper = helper_executable()?;
+fn show(plan: &[Step], local: &LocalInstall, elevation: Elevation) {
     println!("DevSpace will make these changes with administrator rights:");
     for (index, step) in plan.iter().enumerate() {
         println!("  {}. {}", index + 1, step.description);
     }
-    println!(
-        "Each change runs `sudo {} <operation>`; sudo may ask for your password.",
-        helper.display()
-    );
-    if !yes && !confirm()? {
+    match elevation {
+        Elevation::Terminal => {
+            let installs = matches!(plan[0].operation, Operation::InstallHelper { .. });
+            if installs {
+                println!(
+                    "Change 1 runs `sudo {} install-helper …`.",
+                    local.bundled_helper.display()
+                );
+            }
+            if let Some(last) = plan.last()
+                && (!installs || plan.len() > 1)
+            {
+                println!(
+                    "{} `sudo {} <operation>`; sudo may ask for your password.",
+                    if installs {
+                        "The others run"
+                    } else {
+                        "Each change runs"
+                    },
+                    local.program_for(&last.operation).display()
+                );
+            }
+        }
+        Elevation::Graphical => {
+            println!("The system asks once for an administrator password.");
+        }
+    }
+}
+
+/// Shows `plan`, asks for approval (unless `--yes`) and runs each step
+/// through the helper; with `--dry-run`, only shows it.
+fn apply(plan: &[Step], local: &LocalInstall, options: Options) -> Result<ExitCode, CliError> {
+    show(plan, local, options.elevation());
+    if options.dry_run {
+        return Ok(ExitCode::SUCCESS);
+    }
+    if !options.yes && !confirm()? {
         println!("cancelled; nothing was changed");
         return Ok(ExitCode::FAILURE);
     }
-    for step in plan {
-        let status = elevation::run_elevated(
-            &helper,
-            &step.operation.to_args(),
-            step.certificate.as_deref().map(str::as_bytes),
-        )?;
-        if !status.success() {
-            return Err(CliError::HelperFailed {
-                operation: step.operation.name(),
-                status,
-            });
-        }
+    let args: Vec<Vec<String>> = plan.iter().map(|step| step.operation.to_args()).collect();
+    let commands: Vec<ElevatedCommand<'_>> = plan
+        .iter()
+        .zip(&args)
+        .map(|(step, args)| ElevatedCommand {
+            program: local.program_for(&step.operation),
+            args,
+            stdin: step.certificate.as_deref().map(str::as_bytes),
+        })
+        .collect();
+    if let Err(failure) = elevation::run_all(
+        options.elevation(),
+        &commands,
+        "DevSpace wants to configure local domains and HTTPS.",
+    )? {
+        return Err(CliError::HelperFailed {
+            operation: failure
+                .index
+                .map(|index| format!("`{HELPER_NAME} {}`", plan[index].operation.name())),
+            status: failure.status,
+        });
     }
     println!("done; check with `devspace web status`");
     Ok(ExitCode::SUCCESS)
@@ -170,10 +326,20 @@ fn sites_location(status: &WebStatus) -> Result<(Tld, LoopbackAddress), CliError
 ///
 /// Fails without planning anything if an integration conflicts with
 /// another tool or if the platform does not support it.
-pub fn setup_plan(status: &WebStatus) -> Result<Vec<Step>, CliError> {
+pub fn setup_plan(status: &WebStatus, local: &LocalInstall) -> Result<Vec<Step>, CliError> {
     let (tld, address) = sites_location(status)?;
     let system = &status.system;
     let mut conflicts = Vec::new();
+    if let Some(link) = &local.cli_link
+        && link.state == IntegrationState::Conflict
+    {
+        conflicts.push(format!("`{}`", cli_link::link_path()?.display()));
+    }
+    if let Some(copy) = &local.helper
+        && copy.state == IntegrationState::Conflict
+    {
+        conflicts.push(format!("`{}`", copy.installed.display()));
+    }
     for (state, what) in [
         (system.resolver, format!("the resolver file for *.{tld}")),
         (
@@ -236,6 +402,41 @@ pub fn setup_plan(status: &WebStatus) -> Result<Vec<Step>, CliError> {
             certificate: Some(certificate.to_pem()),
         });
     }
+    if let Some(link) = &local.cli_link
+        && matches!(
+            link.state,
+            IntegrationState::Missing | IntegrationState::Outdated
+        )
+    {
+        plan.push(Step {
+            description: cli_link::describe_install(&link.target)?,
+            operation: Operation::LinkCli {
+                target: link.target.clone(),
+            },
+            certificate: None,
+        });
+    }
+    with_installed_helper(plan, local)
+}
+
+/// Prepends the installation of the helper to a non-empty `plan` when the
+/// installed copy is missing or differs from the helper of this CLI.
+fn with_installed_helper(mut plan: Vec<Step>, local: &LocalInstall) -> Result<Vec<Step>, CliError> {
+    if let Some(copy) = &local.helper
+        && !plan.is_empty()
+        && copy.state != IntegrationState::Installed
+    {
+        plan.insert(
+            0,
+            Step {
+                description: helper_install::describe_install(&copy.sha256.to_colon_hex())?,
+                operation: Operation::InstallHelper {
+                    sha256: copy.sha256,
+                },
+                certificate: None,
+            },
+        );
+    }
     Ok(plan)
 }
 
@@ -245,7 +446,7 @@ pub fn setup_plan(status: &WebStatus) -> Result<Vec<Step>, CliError> {
 /// # Errors
 ///
 /// Fails if a description cannot be produced (unsupported platform).
-pub fn teardown_plan(status: &WebStatus) -> Result<Vec<Step>, CliError> {
+pub fn teardown_plan(status: &WebStatus, local: &LocalInstall) -> Result<Vec<Step>, CliError> {
     let (tld, address) = sites_location(status)?;
     let system = &status.system;
     let mut plan = Vec::new();
@@ -273,7 +474,32 @@ pub fn teardown_plan(status: &WebStatus) -> Result<Vec<Step>, CliError> {
             certificate: None,
         });
     }
-    Ok(plan)
+    if let Some(link) = &local.cli_link
+        && matches!(
+            link.state,
+            IntegrationState::Installed | IntegrationState::Outdated
+        )
+    {
+        plan.push(Step {
+            description: cli_link::describe_remove()?,
+            operation: Operation::UnlinkCli,
+            certificate: None,
+        });
+    }
+    if let Some(copy) = &local.helper
+        && (!plan.is_empty()
+            || matches!(
+                copy.state,
+                IntegrationState::Installed | IntegrationState::Outdated
+            ))
+    {
+        plan.push(Step {
+            description: helper_install::describe_remove()?,
+            operation: Operation::RemoveHelper,
+            certificate: None,
+        });
+    }
+    with_installed_helper(plan, local)
 }
 
 fn needs_install(state: IntegrationStatus) -> bool {
@@ -307,17 +533,6 @@ fn local_ca(status: &WebStatus) -> Result<Option<Certificate>, CliError> {
         });
     }
     Ok(Some(certificate))
-}
-
-/// The helper is installed next to the `devspace` executable.
-fn helper_executable() -> Result<PathBuf, CliError> {
-    let cli = std::env::current_exe().map_err(CliError::CurrentExe)?;
-    let path = cli.with_file_name(executable_name(HELPER_NAME));
-    if path.is_file() {
-        Ok(path)
-    } else {
-        Err(CliError::HelperNotFound { path })
-    }
 }
 
 fn confirm() -> Result<bool, CliError> {
@@ -354,6 +569,30 @@ mod tests {
         status
     }
 
+    /// No installed helper, no link (the platforms without them).
+    fn none() -> LocalInstall {
+        LocalInstall {
+            bundled_helper: "/opt/devspace/devspace-helper".into(),
+            helper: None,
+            cli_link: None,
+        }
+    }
+
+    fn bundled(helper: IntegrationState, link: IntegrationState) -> LocalInstall {
+        LocalInstall {
+            bundled_helper: "/Applications/DevSpace.app/Contents/MacOS/devspace-helper".into(),
+            helper: Some(HelperCopy {
+                installed: "/Library/PrivilegedHelperTools/me.romainalcon.devspace.helper".into(),
+                state: helper,
+                sha256: Fingerprint::of(b"helper"),
+            }),
+            cli_link: Some(CliLink {
+                target: "/Applications/DevSpace.app/Contents/MacOS/devspace".into(),
+                state: link,
+            }),
+        }
+    }
+
     fn operations(plan: &[Step]) -> Vec<&'static str> {
         plan.iter().map(|step| step.operation.name()).collect()
     }
@@ -362,7 +601,7 @@ mod tests {
     #[test]
     fn setup_installs_only_what_is_missing() {
         let mut status = sample_with_ca();
-        let plan = setup_plan(&status).unwrap();
+        let plan = setup_plan(&status, &none()).unwrap();
         assert_eq!(operations(&plan), ["trust-certificate"]);
         assert!(
             plan[0]
@@ -375,7 +614,7 @@ mod tests {
         status.system.resolver = IntegrationStatus::Outdated;
         status.system.port_forwarding = IntegrationStatus::Missing;
         status.system.certificate_trust = IntegrationStatus::Installed;
-        let plan = setup_plan(&status).unwrap();
+        let plan = setup_plan(&status, &none()).unwrap();
         assert_eq!(
             operations(&plan),
             ["install-resolver", "install-port-forwarding"]
@@ -399,14 +638,14 @@ mod tests {
 
         status.system.resolver = IntegrationStatus::Installed;
         status.system.port_forwarding = IntegrationStatus::Installed;
-        assert!(setup_plan(&status).unwrap().is_empty());
+        assert!(setup_plan(&status, &none()).unwrap().is_empty());
     }
 
     #[test]
     fn conflicts_block_the_whole_setup() {
         let mut status = sample_with_ca();
         status.system.resolver = IntegrationStatus::Conflict;
-        let err = setup_plan(&status).unwrap_err();
+        let err = setup_plan(&status, &none()).unwrap_err();
         let message = err.to_string();
         assert!(message.contains("never modifies"), "{message}");
         assert!(
@@ -424,7 +663,7 @@ mod tests {
         status.system.certificate_trust = IntegrationStatus::Missing;
         assert!(trust_waits_for_ca(&status));
         assert_eq!(
-            operations(&setup_plan(&status).unwrap()),
+            operations(&setup_plan(&status, &none()).unwrap()),
             ["install-port-forwarding"]
         );
     }
@@ -433,15 +672,15 @@ mod tests {
     fn invalid_settings_from_the_daemon_are_refused() {
         let mut status = sample_with_ca();
         status.address = "10.0.0.1".into();
-        assert!(setup_plan(&status).is_err());
-        assert!(teardown_plan(&status).is_err());
+        assert!(setup_plan(&status, &none()).is_err());
+        assert!(teardown_plan(&status, &none()).is_err());
     }
 
     #[test]
     fn mismatched_fingerprint_is_refused() {
         let mut status = sample_with_ca();
         status.certificate_authority.as_mut().unwrap().sha256 = "00".repeat(32);
-        assert!(setup_plan(&status).is_err());
+        assert!(setup_plan(&status, &none()).is_err());
     }
 
     #[cfg(target_os = "macos")]
@@ -450,10 +689,89 @@ mod tests {
         let mut status = sample_with_ca();
         status.system.certificate_trust = IntegrationStatus::Installed;
         status.system.resolver = IntegrationStatus::Conflict;
-        let plan = teardown_plan(&status).unwrap();
+        let plan = teardown_plan(&status, &none()).unwrap();
         assert_eq!(
             operations(&plan),
             ["untrust-certificate", "remove-port-forwarding"]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_helper_is_installed_first_and_runs_from_its_copy() {
+        use IntegrationState::{Installed, Missing, Outdated};
+        let mut status = sample_with_ca();
+        status.system.certificate_trust = IntegrationStatus::Installed;
+
+        // Nothing to change: the helper is not installed for nothing.
+        assert!(
+            setup_plan(&status, &bundled(Missing, Installed))
+                .unwrap()
+                .is_empty()
+        );
+
+        let local = bundled(Outdated, Missing);
+        let plan = setup_plan(&status, &local).unwrap();
+        assert_eq!(operations(&plan), ["install-helper", "link-cli"]);
+        assert_eq!(
+            plan[0].operation,
+            Operation::InstallHelper {
+                sha256: Fingerprint::of(b"helper")
+            }
+        );
+        assert!(
+            plan[0]
+                .description
+                .contains("/Library/PrivilegedHelperTools/")
+        );
+        assert_eq!(local.program_for(&plan[0].operation), local.bundled_helper);
+        assert_eq!(
+            local.program_for(&plan[1].operation),
+            Path::new("/Library/PrivilegedHelperTools/me.romainalcon.devspace.helper")
+        );
+
+        let plan = setup_plan(&status, &bundled(Installed, Outdated)).unwrap();
+        assert_eq!(operations(&plan), ["link-cli"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_foreign_devspace_command_blocks_the_setup() {
+        let status = sample_with_ca();
+        let err = setup_plan(
+            &status,
+            &bundled(IntegrationState::Installed, IntegrationState::Conflict),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("/usr/local/bin/devspace"), "{err}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn teardown_removes_the_link_then_the_helper() {
+        use IntegrationState::{Installed, Missing, Outdated};
+        let mut status = sample_with_ca();
+        status.system.resolver = IntegrationStatus::Missing;
+        status.system.port_forwarding = IntegrationStatus::Missing;
+        status.system.certificate_trust = IntegrationStatus::Missing;
+
+        assert!(
+            teardown_plan(&status, &bundled(Missing, Missing))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            operations(&teardown_plan(&status, &bundled(Installed, Missing)).unwrap()),
+            ["remove-helper"]
+        );
+        assert_eq!(
+            operations(&teardown_plan(&status, &bundled(Missing, Installed)).unwrap()),
+            ["install-helper", "unlink-cli", "remove-helper"]
+        );
+        status.system.resolver = IntegrationStatus::Installed;
+        assert_eq!(
+            operations(&teardown_plan(&status, &bundled(Installed, Outdated)).unwrap()),
+            ["remove-resolver", "unlink-cli", "remove-helper"]
         );
     }
 }

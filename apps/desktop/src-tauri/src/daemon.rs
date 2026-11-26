@@ -223,6 +223,27 @@ impl Daemon {
         Ok(self.view().await)
     }
 
+    /// Starts the daemon like [`Daemon::start`]; a daemon of another version
+    /// (left by the application before an update, or started by another
+    /// installation) is restarted with the one next to the application.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`Daemon::start`] and [`Daemon::stop`].
+    pub async fn start_current(&self) -> Result<DaemonView, DesktopError> {
+        if let DaemonView::Running { status } = self.view().await
+            && status.version != self.peer.version
+        {
+            tracing::info!(
+                running = %status.version,
+                expected = %self.peer.version,
+                "restarting a daemon of another version"
+            );
+            self.stop().await?;
+        }
+        self.start().await
+    }
+
     /// Stops the daemon and returns its state.
     ///
     /// # Errors

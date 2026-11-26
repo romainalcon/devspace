@@ -27,11 +27,12 @@ that keep it maintainable. Any change to these rules must be documented here
 
    devspaced ──spawns──▶ Caddy (user, loopback only)
    devspaced ──spawns──▶ PHP-FPM per PHP version (user, private socket)
-   devspaced ──spawns──▶ PostgreSQL / MySQL per series (user, loopback)
-   devspace system setup ──sudo──▶ devspace-helper (one operation, exits)
+   devspaced ──spawns──▶ PostgreSQL / MySQL / Valkey per series (user, loopback)
+   devspace system setup ──sudo──▶ devspace-helper (one operation, exits;
+                                   macOS: the administrator-owned copy)
 ```
 
-Status in M6: the daemon serves the IPC protocol, owns the SQLite
+Status in M7: the daemon serves the IPC protocol, owns the SQLite
 database, runs the DNS server, supervises Caddy, the PHP-FPM masters and
 the service servers, and installs runtimes; the CLI uses IPC for the
 daemon lifecycle, the project registry (`devspace project …`), the web
@@ -40,8 +41,11 @@ server (`devspace web …`), the runtimes (`devspace runtime …`,
 daemon-independent commands (configuration, paths), and starts the
 privileged helper through `sudo` for `devspace system setup|teardown`. The
 desktop application (M6) talks to the daemon through `devspace-ipc` only:
-its Tauri shell exposes a few commands to the Vue interface and starts the
-daemon with the same launcher as the CLI (`devspace_ipc::launcher`).
+its Tauri shell exposes a few commands to the Vue interface, starts the
+daemon with the same launcher as the CLI (`devspace_ipc::launcher`), runs
+the bundled CLI for `system setup|teardown`, and installs its own updates.
+The bundles ship `devspaced`, `devspace` and `devspace-helper` next to the
+application executable (see [Distribution](#distribution)).
 
 ## Crates
 
@@ -167,9 +171,27 @@ Resolved by `devspace_platform::AppPaths`:
   `LoopbackAddress`) shared by the configuration, the CLI and the helper;
   the platform layer validates them again before building paths or
   commands.
-- In installed layouts the helper must be root-owned (M7); in development it
-  is run from `target/`, which is acceptable only because the user
-  approves every invocation with their own password.
+- The helper next to the CLI (in the application bundle, or `target/` in
+  development) is writable by the user. On macOS it runs elevated only for
+  `install-helper`: it reads its own executable, checks that those bytes
+  have the SHA-256 the user approved (computed by the CLI) and writes them
+  to `/Library/PrivilegedHelperTools/me.romainalcon.devspace.helper`
+  (`devspace_platform::system::helper_install`, a directory owned and only
+  writable by root). Every other operation runs that copy, and the helper
+  refuses them when it is not the administrator-owned installed copy. The
+  plan reinstalls the copy when its content differs from the helper of
+  the running CLI (e.g. after an update). The first `install-helper` still
+  runs a user-writable program elevated, once, with the user's approval.
+- `devspace_platform::system::cli_link` links `/usr/local/bin/devspace` to
+  the CLI of an application bundle; a symbolic link cannot carry the
+  marker, so a link is DevSpace's only when it points to
+  `…/<name>.app/Contents/MacOS/devspace`.
+- Elevation (`system::elevation::run_all`): `sudo` once per operation on
+  the terminal, or (`--graphical`, used by the desktop application) one
+  `osascript` `do shell script … with administrator privileges` running
+  every operation in a POSIX script whose values are all single-quoted; the
+  script and the prompt reach `osascript` through environment variables,
+  so nothing is escaped as AppleScript.
 
 ### IPC
 
@@ -197,8 +219,8 @@ handshake messages never change shape; any other change increments
 
 **Timeouts**: connect 5 s, handshake 5 s (both sides); each request has its
 own limit, `Request::time_limit` (10 s for the registry, 45 s for the web
-server, 1 min for lists and removals, 10 min for service start/stop, 15 to
-30 min for downloads), so that every client waits the same time.
+server, 1 min for lists, index refreshes and removals, 10 min for service
+start/stop, 15 to 45 min for downloads), so that every client waits the same time.
 
 **Launcher** (`devspace_ipc::launcher`): `start`, `stop`, `status` and
 `daemon_executable` (`devspaced` next to the running executable), used by
@@ -286,9 +308,19 @@ server, 1 min for lists and removals, 10 min for service start/stop, 15 to
   and the public key `registry/devspace.pub` are embedded with
   `include_bytes!`; `Index::embedded` checks the signature (prehashed
   Ed25519 only) before parsing, then validates strictly (`deny_unknown_fields`,
-  `https://` URLs, lowercase SHA-256, sizes ≤ 512 MiB, relative paths without
+  `https://` URLs, lowercase SHA-256, sizes ≤ 1 GiB, relative paths without
   `..`). The secret key never enters the repository; the
   `devspace-registry` tool signs with it after asking its password.
+- Remote index (`runtime::remote::IndexStore`): `index.json` and
+  `index.json.minisig` of the GitHub release `index`, downloaded by the
+  daemon (8 MiB / 4 KiB at most) at startup + 5 s and every 6 h
+  (`packages.remote_index`), and on `index_refresh`. Accepted only when the
+  signature verifies with the embedded key and the serial is higher than
+  the one in use (no rollback, even to a correctly signed older index);
+  kept in `<data>/index/` (signature written last, so an interrupted write
+  never verifies) and loaded at startup when newer than the embedded
+  index. The daemon keeps the index behind a `RwLock`; installations read
+  the current one.
 - Installation (`runtime::install`): per archive, download of at most the
   declared size (`download::fetch`), SHA-256 check, `archive::extract_tree`
   into the staging directory; then each program's version is checked, the
@@ -338,9 +370,9 @@ server, 1 min for lists and removals, 10 min for service start/stop, 15 to
 
 ### Services
 
-- `devspace_core::service`: `ServiceName` (`mysql`, `postgresql`, also
-  their package names), `Series` (PostgreSQL `MAJOR`, MySQL
-  `MAJOR.MINOR`), `InstanceKey` (service + series). An instance runs the
+- `devspace_core::service`: `ServiceName` (`mysql`, `postgresql`,
+  `valkey`, also their package names), `Series` (PostgreSQL `MAJOR`, MySQL
+  and Valkey `MAJOR.MINOR`), `InstanceKey` (service + series). An instance runs the
   newest installed version of its series.
 - Plan (`service::plan`, pure): an instance runs when a registered project
   requires it (`[services]`, resolved to the newest installed version
@@ -371,13 +403,24 @@ server, 1 min for lists and removals, 10 min for service start/stop, 15 to
   `root@'127.%'` (TCP clients come from a loopback address,
   `--skip-name-resolve`), then `mysqld` with `--bind-address`, `--port`,
   `--socket`, `--mysqlx=OFF`, `--secure-file-priv=NULL`.
+  Valkey: options only (no configuration file is read), `--bind`,
+  `--port`, `--dir <data>`, `--protected-mode no`, `--logfile ""`,
+  `--unixsocket` with `--unixsocketperm 700`; no initialisation tool (an
+  empty data directory). Built by DevSpace (`scripts/packages/`, workflow
+  `packages.yml`): official source archive checked against the SHA-256 of
+  valkey-io/valkey-hashes pinned in `valkey-sources.txt`, `make
+  BUILD_TLS=no USE_SYSTEMD=no`, macOS 12 deployment target, Linux in the
+  `manylinux_2_28` image (glibc 2.28); assets of the release
+  `valkey-<version>`, never replaced once published.
 - Supervision (`devspaced::services`): `Services::sync` stops the servers
   not in the plan or running another version, then starts the missing
   ones: port check on the sites address (unconfigured address → hint to
   run `system setup`; busy port → setting to change), initialisation on a
   blocking thread (5 min limit), start, readiness by a failing bind of the
   port (60 s). Stop: `SIGINT` (PostgreSQL fast shutdown) or `SIGTERM`
-  (MySQL), kill after 30 s. The plan is applied at startup and after every
+  (MySQL, Valkey), kill after 30 s; on Windows, which has no such signal,
+  `pg_ctl stop -m fast -W` or `mysqladmin --no-defaults shutdown`
+  (`Instance::stop_command`) instead. The plan is applied at startup and after every
   change of the projects, of the installed service versions and of the
   choices; a removed version is stopped first. Orphans are stopped at
   startup when their pid file designates a server program of an installed
@@ -404,9 +447,18 @@ server, 1 min for lists and removals, 10 min for service start/stop, 15 to
   action per key with notifications. Pages: Overview (daemon, web server,
   system integrations, PHP-FPM), Projects, Runtimes, Services.
 - Capabilities: `core:default` and `dialog:allow-open` (folder picker) only;
-  strict CSP (`script-src 'self'`). Privileged operations stay in the CLI:
-  the interface shows the integrations and the `devspace system setup`
-  command.
+  strict CSP (`script-src 'self'`).
+- System integrations (`src-tauri/src/system.rs`): the plan and the
+  privileged changes stay in the CLI. The shell runs the bundled
+  `devspace system setup|teardown --dry-run` to show the plan, then, once
+  the user approved it, `--yes --graphical`; the CLI recomputes the plan
+  and keeps its refusals.
+- Updates (`src-tauri/src/update.rs`, `tauri-plugin-updater`, Rust side
+  only, no webview permission): `latest.json` of the latest release,
+  bundles signed with the updater key (minisign, public key in
+  `tauri.conf.json`). Install: download and verify, stop the daemon, install,
+  restart. At startup a daemon of another version is stopped and the
+  bundled one started (`Daemon::start_current`).
 
 ### Daemon lifecycle
 
@@ -448,6 +500,28 @@ clear error.
 `proc_pidpath`, Win32 token, process, pipe and security descriptor APIs),
 each block having a `SAFETY:` comment.
 
+## Distribution
+
+- `apps/desktop/src-tauri/tauri.bundle.conf.json`, merged by `npm run
+  bundle` (`tauri build --config …`), adds the sidecars (`externalBin`),
+  the updater artifacts and the platform settings; the base configuration
+  has none, so `cargo clippy --workspace` needs no prior build.
+  `scripts/sidecars.mjs` (its `beforeBuildCommand`) builds `devspaced`,
+  `devspace` and `devspace-helper` in release mode for the bundle target
+  and copies them to `src-tauri/binaries/<name>-<target>`.
+- macOS: `.app` and `.dmg`, ad hoc signature, macOS 12+. Windows: NSIS,
+  per user, `PATH` of the user updated by installer hooks
+  (`src-tauri/windows/installer-hooks.nsh`). Linux: `.deb`, `.rpm`
+  (programs in `/usr/bin`) and AppImage (the only Linux bundle the updater
+  replaces).
+- `.github/workflows/release.yml`: on a tag `vX.Y.Z` equal to the
+  workspace version, builds the five targets with `tauri-action` into a
+  draft release with `latest.json`. Apple and Windows signing secrets are
+  exported only when they exist (an empty variable would replace the ad
+  hoc identity).
+- `[profile.release.build-override] strip = false`: stripped procedural
+  macro dylibs fail to load on macOS.
+
 ## Tooling
 
 - `rust-toolchain.toml`: stable channel with `rustfmt` and `clippy`.
@@ -458,6 +532,10 @@ each block having a `SAFETY:` comment.
 - CI (`.github/workflows/ci.yml`): `fmt` on Linux, then `clippy -D warnings`
   and `test` on macOS ARM64, macOS x86_64, Linux x86_64, Linux ARM64 and
   Windows x86_64, plus a frontend type-check/build job.
+- `.github/workflows/packages.yml` (manual): DevSpace builds of packages
+  without official relocatable builds (Valkey), attached to their release.
+- `.github/workflows/release.yml`: desktop bundles (see
+  [Distribution](#distribution)).
 
 ## Decision log
 
@@ -514,3 +592,11 @@ each block having a `SAFETY:` comment.
 | 49 | 2026-11-26 | Single-instance lock moved from `core` to `platform`. | The launcher (in `ipc`, which depends on `platform` only) checks it. |
 | 50 | 2026-11-26 | One generic `daemon_request` command rather than one Tauri command per request; protocol types mirrored by hand in TypeScript. | No business logic in the shell and no duplicated command list; a type generator would add a dependency to `ipc` for about forty types. |
 | 51 | 2026-11-26 | Site URLs and project directories opened by the shell from the daemon's answers; no opener permission for the webview. | The interface cannot make the system open arbitrary URLs or paths. |
+| 52 | 2026-11-26 | M7 hosted on GitHub Releases of the public repository; no signing certificates yet (ad hoc macOS signature, unsigned Windows), signing activated by secrets. | Approved by the user; the updater, the remote index and the packages need unauthenticated downloads. |
+| 53 | 2026-11-26 | Administrator-owned copy of the helper installed by `system setup` (macOS), checked by SHA-256; other operations refused outside it. | Approved by the user: the bundle is writable by the user, so running its helper elevated repeatedly would let any program of the user gain root. Compatible with `.dmg` and the updater, unlike a root-owned `.pkg` installation. |
+| 54 | 2026-11-26 | `/usr/local/bin/devspace` linked by the helper; a link is DevSpace's when it points to the CLI of an application bundle. | Approved by the user; the Linux packages and the Windows installer put the CLI in the `PATH` themselves. |
+| 55 | 2026-11-26 | `system setup` from the application runs the bundled CLI (`--dry-run`, then `--yes --graphical`). | No duplicated plan logic; the desktop still never depends on `core`. |
+| 56 | 2026-11-26 | Remote index: GitHub release `index`, same key as the embedded index, strictly increasing serial. | One trust anchor; the serial prevents serving an older signed index again. |
+| 57 | 2026-11-26 | Valkey rather than Redis, built by DevSpace (8.1 and 9.1). | BSD-licensed, protocol-compatible; neither project publishes relocatable macOS builds. Sources pinned by the official hashes. |
+| 58 | 2026-11-26 | MySQL Linux ARM64 from the full archive; archive limit raised to 1 GiB, downloads to 25 min. | Approved by the user; Oracle publishes no minimal ARM64 archive (≈ 790/930 MiB, 1.5–1.8 GiB extracted, under the 2 GiB extraction limit). MD5 cross-checked with Oracle's download page. |
+| 59 | 2026-11-26 | Graceful stop on Windows with the servers' own tools. | Console-less processes cannot receive Ctrl+C; `pg_ctl` and `mysqladmin` are shipped with the servers. |

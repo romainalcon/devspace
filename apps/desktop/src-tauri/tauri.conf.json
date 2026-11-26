@@ -1,7 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "DevSpace",
-  "version": "0.1.0",
   "identifier": "me.romainalcon.devspace.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -34,5 +33,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlFNUYyMzk0NjRBMDk0QjIKUldTeWxLQmtsQ05mbmllYk1wcmxhMVo4RTNZOGpQVk1OU3pXU1JVV3Y2Nmpuakg3UDhJN3FmOFAK",
+      "endpoints": [
+        "https://github.com/romainalcon/devspace/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

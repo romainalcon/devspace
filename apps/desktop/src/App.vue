@@ -5,6 +5,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import "vue-sonner/style.css";
 
 import StatusBadge from "@/components/StatusBadge.vue";
+import UpdateNotice from "@/components/UpdateNotice.vue";
 import { Toaster } from "@/components/ui/sonner";
 import type { Tone } from "@/lib/format";
 import { startPolling, store } from "@/lib/store";
@@ -75,6 +76,9 @@ onBeforeUnmount(() => stopPolling?.());
           {{ page.label }}
         </button>
       </nav>
+      <div class="px-3 pb-3">
+        <UpdateNotice />
+      </div>
       <div class="border-t px-5 py-4">
         <StatusBadge v-bind="daemonBadge" />
       </div>

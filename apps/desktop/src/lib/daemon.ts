@@ -49,6 +49,35 @@ export async function request<K extends ResponseKind>(
   return response as Extract<Response, { kind: K }>;
 }
 
+/** Output of `devspace system setup|teardown` run by the application. */
+export interface SystemOutput {
+  success: boolean;
+  stdout: string;
+  stderr: string;
+}
+
+export type SystemAction = "setup" | "teardown";
+
+/** An available update of the application. */
+export interface UpdateInfo {
+  current_version: string;
+  version: string;
+  notes: string | null;
+}
+
+export const system = {
+  /** Changes the command would make (`--dry-run`). */
+  plan: (action: SystemAction) => call<SystemOutput>("system_plan", { action }),
+  /** Makes them; the system asks for the administrator password. */
+  apply: (action: SystemAction) => call<SystemOutput>("system_apply", { action }),
+};
+
+export const updates = {
+  check: () => call<UpdateInfo | null>("update_check"),
+  /** Stops the daemon, installs the update and restarts the application. */
+  install: () => call<void>("update_install"),
+};
+
 export const daemon = {
   status: () => call<DaemonView>("daemon_status"),
   start: () => call<DaemonView>("daemon_start"),

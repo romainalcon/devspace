@@ -131,14 +131,29 @@ implemented and awaiting validation by the user.
 | F-6.8 | While the window is visible the state is refreshed every 2 s (daemon, projects, services) and every 10 s (web server, package index), and after every action; changes made with the CLI appear without action. Long actions show a notification until they end; failures show the daemon's message. |
 | F-6.9 | The light or dark appearance follows the system. |
 
+### Implemented (M7)
+
+| ID | Requirement |
+|---|---|
+| F-7.1 | The desktop bundles (macOS `.app`/`.dmg`, Windows NSIS installer, Linux `.deb`, `.rpm`, AppImage) ship `devspaced`, `devspace` and `devspace-helper` next to the application. The Windows installer is per user and adds its directory to the user's `PATH`; the Linux packages install the programs in `/usr/bin`. |
+| F-7.2 | On macOS, `devspace system setup` first installs a copy of the helper owned by the administrator, `/Library/PrivilegedHelperTools/me.romainalcon.devspace.helper`, after checking that the bytes copied have the SHA-256 shown to the user; every other operation runs that copy, and the helper refuses to perform them from anywhere else. A copy that differs from the helper of the running CLI is replaced by the next setup. |
+| F-7.3 | On macOS, when the CLI is that of an application bundle, `system setup` links `/usr/local/bin/devspace` to it; a file or link there that does not point to the CLI of an application bundle blocks the setup and is never modified. `system teardown` removes the link and the installed helper. |
+| F-7.4 | `system setup|teardown --dry-run` only prints the changes; `--graphical` asks for the administrator password once, with the system dialog, for every change (macOS). |
+| F-7.5 | The application's Overview runs `system setup|teardown` (F-3.7): it shows the changes printed by the CLI, and applies them once the user approved, with the graphical elevation. |
+| F-7.6 | The application checks for an update when it starts and every 6 hours (`latest.json` of the latest GitHub release), and offers to install it: the update is downloaded and its signature checked against the public key of the build, then the daemon is stopped, the update installed and the application restarted. A daemon of another version is restarted with the one of the application when the application starts. |
+| F-7.7 | The daemon downloads the package index published with the releases (assets `index.json` and `index.json.minisig` of the release `index`) at startup and every 6 hours, and with `devspace runtime refresh` (or "Check for new versions" in the application). It is used only if its signature matches the embedded public key and its serial is higher than that of the index in use; it is kept in `<data>/index/` and used at the next startups while it is newer than the embedded one. `runtime list` shows the serial, where the index comes from (`embedded` or `downloaded`) and why the last download failed. `packages.remote_index = false` disables the downloads. |
+| F-7.8 | Valkey (`valkey`, series `MAJOR.MINOR`, port `services.valkey_port`, 6379) is a service like PostgreSQL and MySQL (F-5.2 to F-5.11), built by DevSpace from the official sources for macOS and Linux, without TLS. It runs with no configuration file, on `web.address` and a socket of the private runtime directory, without password (`default` user), and saves its data in its data directory when it stops. `devspace exec` sets no variable for it. Not available on Windows. |
+| F-7.9 | MySQL is also published for Linux ARM64 (Oracle's full archive). |
+| F-7.10 | On Windows, PostgreSQL and MySQL are stopped with `pg_ctl stop -m fast` and `mysqladmin shutdown`, then killed after 30 s. |
+
 ### Planned
 
 | ID | Milestone | Requirement |
 |---|---|---|
 | F-3.10 | M3+ | System integrations on Linux and Windows. |
-| F-4.10 | M4+ | PHP sites on Windows; remote index updates (M7). |
-| F-5.12 | M7 | Redis/Valkey (needs DevSpace builds and a hosting); MySQL on macOS x86_64 and Linux ARM64; graceful stop of the servers on Windows. |
-| F-6.10 | M7 | Desktop installers bundling `devspaced`, `devspace` and `devspace-helper`; `system setup|teardown` from the application. |
+| F-4.10 | M4+ | PHP sites on Windows. |
+| F-5.12 | — | MySQL on macOS x86_64 (Oracle publishes no build). |
+| F-7.11 | — | Developer ID signing and notarisation (macOS), Authenticode signing (Windows): ready in the release workflow, enabled once certificates exist. |
 
 ## Configuration reference (schema version 1)
 
@@ -159,6 +174,10 @@ dns_port = 47053          # DNS server on 127.0.0.1 for *.<tld> (UDP), at least 
 [services]                # on web.address; at least 1024, distinct, not the web ports
 mysql_port = 3306
 postgresql_port = 5432
+valkey_port = 6379
+
+[packages]
+remote_index = true       # download the signed index published with the releases
 ```
 
 Rules: all keys optional, unknown keys rejected, file never overwritten by
@@ -190,6 +209,7 @@ node = "24"
 [services]                # optional; the daemon runs these while the project is registered
 postgresql = "18"         # the series of the newest installed match
 mysql = "8.4"
+valkey = "9.1"            # MAJOR.MINOR
 ```
 
 Rules: all keys optional, unknown keys rejected, file only read by DevSpace
@@ -203,7 +223,7 @@ Project names: 1–63 characters among lowercase ASCII letters, digits and
 `-`, not starting or ending with `-` (a DNS label, for the `*.<tld>`
 domains of M3).
 
-## IPC protocol reference (version 5)
+## IPC protocol reference (version 6)
 
 Frames: 4-byte big-endian payload length, then a UTF-8 JSON object; payloads
 over 1 MiB are rejected. Every message carries a `type` tag.
@@ -225,7 +245,8 @@ over 1 MiB are rejected. Every message carries a `type` tag.
 | `project_list` | `projects` with `projects: [{name, path, added_at}]` sorted by name |
 | `project_remove` with `name` | `project_removed` with `name`, `path`, `added_at` |
 | `web_install`, `web_start`, `web_stop`, `web_restart`, `web_status` | `web_status` (below) |
-| `runtime_list` | `runtimes` with `index_serial`, `platform`, `versions: [{name, version, available, path}]` (`path` `null` when not installed) |
+| `runtime_list` | `runtimes` with `index_serial`, `index_source` (`embedded`/`downloaded`), optional `index_error`, `platform`, `versions: [{name, version, available, path}]` (`path` `null` when not installed) |
+| `index_refresh` | `runtimes`, after downloading the published index |
 | `runtime_install` with `name`, optional `version` (requirement) | `runtime_installed` with `name`, `version`, `path`, `changed` (`false`: already installed) |
 | `runtime_remove` with `name`, `version` (exact) | `runtime_removed` with the same fields |
 | `runtime_env` with `directory` (absolute) | `runtime_env` with `project` (or `null`), `runtimes: [{name, version, bin_dirs, variables: [[name, value]]}]`, `missing: [message]` |
@@ -256,17 +277,20 @@ Any request may instead be answered with `error`: `code` (`invalid_request`,
 human-readable `message`; the connection stays open. `added_at` is in
 seconds since the Unix epoch. `web_install` and `runtime_install` may take
 minutes; every client waits the time given by `Request::time_limit` (from
-10 s to 30 min, see `ARCHITECTURE.md`).
+10 s to 45 min, see `ARCHITECTURE.md`).
 
 Version history: 1 (M1) `ping`, `status`, `shutdown`; 2 (M2) project
 requests and `error` responses; 3 (M3) web requests, `unavailable` and
 `failed` codes; 4 (M4) runtime requests, PHP sites and PHP-FPM states;
-5 (M5) service requests.
+5 (M5) service requests; 6 (M7) `index_refresh`, `index_source` and
+`index_error`, service `valkey`.
 
 ## Privileged helper reference
 
-`devspace-helper` is installed next to `devspace`, run through `sudo`, and
-performs one operation per run:
+`devspace-helper` is shipped next to `devspace` and performs one operation
+per run, through `sudo` (or the graphical elevation, F-7.4). On macOS only
+`install-helper` runs from there; the other operations run from the
+installed copy (F-7.2).
 
 | Operation | Effect (macOS) |
 |---|---|
@@ -276,6 +300,10 @@ performs one operation per run:
 | `remove-port-forwarding --address A` | flushes the anchor, deletes both files, removes the alias `A` (never `127.0.0.1`; pf stays enabled) |
 | `trust-certificate --sha256 F` | reads a PEM certificate on stdin, checks its SHA-256 is `F`, adds it to the System keychain as a trusted SSL root |
 | `untrust-certificate --sha256 F` | same check, removes the trust setting and the certificate |
+| `install-helper --sha256 F` | reads the running helper, checks its SHA-256 is `F`, writes those bytes to `/Library/PrivilegedHelperTools/me.romainalcon.devspace.helper` (`0755`, owned by root; the directory must be writable by root only) |
+| `remove-helper` | deletes the installed helper |
+| `link-cli --target P` | links `/usr/local/bin/devspace` to `P`, which must be `…/<name>.app/Contents/MacOS/devspace`; only replaces a link to such a CLI |
+| `unlink-cli` | deletes that link if it points to the CLI of an application bundle |
 
 Exit status: `0` success, `1` failure, `2` invalid command line. The helper
 refuses to run without administrator rights and never modifies a file that
@@ -299,7 +327,13 @@ No platform-specific command or path may be assumed outside
 - No main process (daemon, CLI, desktop) runs as root/administrator; this is
   enforced at startup (M0).
 - Privileged operations are isolated in a minimal, one-shot helper and
-  require explicit user approval (confirmation, then `sudo`) (M3).
+  require explicit user approval (confirmation, then `sudo`) (M3). In
+  installed layouts the helper that runs elevated is owned by the
+  administrator; the copy shipped in the user-writable bundle only runs
+  elevated to install it, after the user approved its SHA-256 (M7).
+- Application updates are verified against the updater public key of the
+  build; the remote package index against the index key, and never
+  replaces a newer index (M7).
 - The web, DNS and Caddy admin surfaces are never exposed beyond the
   loopback interface; Caddy's admin API is disabled (M3).
 - The local CA key is readable by the current user only; as with any local

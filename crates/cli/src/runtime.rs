@@ -1,4 +1,4 @@
-//! `devspace runtime list|install|remove` and `devspace exec`.
+//! `devspace runtime list|refresh|install|remove` and `devspace exec`.
 //!
 //! Runtimes are installed and selected by the daemon; these commands
 //! require it to run.
@@ -20,9 +20,12 @@ pub enum RuntimeCommand {
     /// List the versions published for this platform and the installed
     /// ones.
     List,
+    /// Download the package index published with the DevSpace releases
+    /// (used if it is signed and newer), then list the versions.
+    Refresh,
     /// Download, verify and install a version.
     Install {
-        /// Runtime: `php`, `node`, `mysql` or `postgresql`.
+        /// Runtime: `php`, `node`, `mysql`, `postgresql` or `valkey`.
         name: String,
         /// `MAJOR`, `MAJOR.MINOR` or `MAJOR.MINOR.PATCH`; the newest
         /// published match is installed (the newest version if absent).
@@ -30,7 +33,7 @@ pub enum RuntimeCommand {
     },
     /// Remove an installed version.
     Remove {
-        /// Runtime: `php`, `node`, `mysql` or `postgresql`.
+        /// Runtime: `php`, `node`, `mysql`, `postgresql` or `valkey`.
         name: String,
         /// Exact installed version, e.g. `8.4.23`.
         version: String,
@@ -42,6 +45,7 @@ pub fn execute(command: RuntimeCommand, paths: &AppPaths) -> Result<ExitCode, Cl
     let endpoint = Endpoint::new(&paths.runtime_dir)?;
     let request = match command {
         RuntimeCommand::List => Request::RuntimeList,
+        RuntimeCommand::Refresh => Request::IndexRefresh,
         RuntimeCommand::Install { name, version } => {
             println!(
                 "installing {name} {} (download and verification may take a few minutes)…",
@@ -84,9 +88,12 @@ fn format_list(list: &RuntimeList) -> String {
     // Writing to a String cannot fail.
     let _ = writeln!(
         out,
-        "package index #{} for {}",
-        list.index_serial, list.platform
+        "package index #{} ({}) for {}",
+        list.index_serial, list.index_source, list.platform
     );
+    if let Some(error) = &list.index_error {
+        let _ = writeln!(out, "  could not download the published index: {error}");
+    }
     let width = list
         .versions
         .iter()
@@ -173,6 +180,8 @@ mod tests {
     fn list_shows_installed_and_available_versions() {
         let text = format_list(&RuntimeList {
             index_serial: 3,
+            index_source: "downloaded".into(),
+            index_error: None,
             platform: "macos-aarch64".into(),
             versions: vec![
                 RuntimeVersionInfo {
@@ -196,7 +205,7 @@ mod tests {
             ],
         });
         assert!(
-            text.starts_with("package index #3 for macos-aarch64\n"),
+            text.starts_with("package index #3 (downloaded) for macos-aarch64\n"),
             "{text}"
         );
         assert!(text.contains("  node 24.22.3  available\n"), "{text}");

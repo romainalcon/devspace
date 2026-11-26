@@ -44,6 +44,7 @@ pub(crate) async fn run(
     web: WebServer,
     runtimes: Runtimes,
     services: Services,
+    remote_index: bool,
 ) -> Result<(), DaemonError> {
     let endpoint = Endpoint::new(&paths.runtime_dir)?;
     let mut listener = Listener::bind(&endpoint)?;
@@ -76,6 +77,8 @@ pub(crate) async fn run(
             None
         }
     };
+    let index_task = remote_index
+        .then(|| tokio::spawn(crate::runtimes::refresh_periodically(Arc::clone(&state))));
     {
         let state = Arc::clone(&state);
         tokio::spawn(async move { handlers::autostart_web(&state).await });
@@ -140,7 +143,7 @@ pub(crate) async fn run(
     state.web.stop().await;
     state.runtimes.php.stop_all().await;
     state.services.stop_all().await;
-    if let Some(task) = dns_task {
+    for task in [dns_task, index_task].into_iter().flatten() {
         task.abort();
     }
     Ok(())

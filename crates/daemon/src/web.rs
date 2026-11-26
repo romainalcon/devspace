@@ -293,6 +293,7 @@ impl WebServer {
                 pid_file: layout.caddy_pid_file.clone(),
                 log: layout.caddy_log.clone(),
                 stop: StopPolicy::DEFAULT,
+                stop_command: None,
             },
             Arc::clone(&self.state),
         ))

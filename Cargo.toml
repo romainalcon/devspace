@@ -97,3 +97,8 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+# Build scripts and procedural macros are host dylibs loaded by rustc:
+# stripping them breaks them on macOS ("mis-aligned LINKEDIT string pool").
+[profile.release.build-override]
+strip = false

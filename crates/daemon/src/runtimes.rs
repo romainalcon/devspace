@@ -3,11 +3,13 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
+use std::time::Duration;
 
 use devspace_core::error::report;
 use devspace_core::project::manifest::Manifest;
 use devspace_core::runtime::index::{Index, platform_key};
+use devspace_core::runtime::remote::{IndexSource, IndexStore};
 use devspace_core::runtime::{
     self, InstalledRuntime, RuntimeLayout, RuntimeName, Selected, Selection, Version, VersionReq,
     install,
@@ -23,49 +25,117 @@ use crate::handlers::{self, DaemonState};
 use crate::php::{self, PhpPools};
 use crate::services;
 
+/// Period of the downloads of the published package index.
+pub(crate) const INDEX_REFRESH_PERIOD: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// The package index in use.
+#[derive(Debug, Clone)]
+struct IndexState {
+    /// The index, or why the embedded one cannot be used.
+    index: Result<Arc<Index>, String>,
+    source: IndexSource,
+    /// Why the last download failed.
+    refresh_error: Option<String>,
+}
+
 /// Runtime state of the daemon.
 #[derive(Debug)]
 pub(crate) struct Runtimes {
     pub(crate) layout: RuntimeLayout,
-    /// The embedded package index, or why it cannot be used.
-    index: Result<Arc<Index>, String>,
+    store: IndexStore,
+    index: RwLock<IndexState>,
     /// Serialises installations and removals.
     changes: tokio::sync::Mutex<()>,
+    /// Serialises the downloads of the index.
+    refresh: tokio::sync::Mutex<()>,
     pub(crate) php: PhpPools,
 }
 
 impl Runtimes {
-    /// Loads the embedded index and cleans what interrupted installations
-    /// left. Blocking.
-    pub(crate) fn new(layout: RuntimeLayout) -> Self {
+    /// Loads the newest of the embedded and the downloaded index and cleans
+    /// what interrupted installations left. Blocking.
+    pub(crate) fn new(layout: RuntimeLayout, store: IndexStore) -> Self {
         install::clean_staging(&layout);
         php::stop_orphans(&layout);
-        let index = match Index::embedded() {
-            Ok(index) => {
-                tracing::info!(serial = index.serial, "package index loaded");
-                Ok(Arc::new(index))
+        let state = match Index::embedded() {
+            Ok(embedded) => {
+                let (index, source) = store.newest(embedded);
+                tracing::info!(
+                    serial = index.serial,
+                    source = source.as_str(),
+                    "package index loaded"
+                );
+                IndexState {
+                    index: Ok(Arc::new(index)),
+                    source,
+                    refresh_error: None,
+                }
             }
             Err(err) => {
                 let message = report(&err);
                 tracing::error!(error = %message, "package index unusable");
-                Err(message)
+                IndexState {
+                    index: Err(message),
+                    source: IndexSource::Embedded,
+                    refresh_error: None,
+                }
             }
         };
         Self {
             php: PhpPools::new(layout.clone()),
             layout,
-            index,
+            store,
+            index: RwLock::new(state),
             changes: tokio::sync::Mutex::new(()),
+            refresh: tokio::sync::Mutex::new(()),
         }
     }
 
+    fn state(&self) -> IndexState {
+        self.index
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     fn index(&self) -> Result<Arc<Index>, Response> {
-        self.index.clone().map_err(|message| {
+        self.state().index.map_err(|message| {
             error(
                 ErrorCode::Internal,
                 format!("the package index of this build is unusable: {message}"),
             )
         })
+    }
+
+    /// Downloads the published index and uses it if it is signed and newer.
+    /// Blocking; the caller holds [`Runtimes::refresh`].
+    fn refresh_blocking(&self) {
+        let Ok(current) = self.state().index else {
+            return;
+        };
+        let result = self.store.refresh(current.serial);
+        let mut state = self.index.write().unwrap_or_else(PoisonError::into_inner);
+        match result {
+            Ok(Some(index)) => {
+                tracing::info!(
+                    previous = current.serial,
+                    serial = index.serial,
+                    "newer package index downloaded"
+                );
+                state.index = Ok(Arc::new(index));
+                state.source = IndexSource::Downloaded;
+                state.refresh_error = None;
+            }
+            Ok(None) => {
+                tracing::debug!(serial = current.serial, "package index up to date");
+                state.refresh_error = None;
+            }
+            Err(err) => {
+                let message = report(&err);
+                tracing::warn!(error = %message, "package index download failed");
+                state.refresh_error = Some(message);
+            }
+        }
     }
 
     pub(crate) fn installed(&self) -> Vec<InstalledRuntime> {
@@ -123,13 +193,41 @@ pub(crate) async fn list(state: &Arc<DaemonState>) -> Response {
                 })
                 .path = Some(installed.dir);
         }
+        let index_state = runtimes.state();
         Response::Runtimes(RuntimeList {
             index_serial: index.serial,
+            index_source: index_state.source.as_str().to_owned(),
+            index_error: index_state.refresh_error,
             platform: platform_key(target).to_owned(),
             versions: versions.into_values().collect(),
         })
     })
     .await
+}
+
+/// `index_refresh`: downloads the published index, then answers like
+/// `runtime_list`.
+pub(crate) async fn refresh_index(state: &Arc<DaemonState>) -> Response {
+    {
+        let _refresh = state.runtimes.refresh.lock().await;
+        let task = Arc::clone(state);
+        if let Err(err) =
+            tokio::task::spawn_blocking(move || task.runtimes.refresh_blocking()).await
+        {
+            tracing::error!(error = %err, "package index refresh task failed");
+        }
+    }
+    list(state).await
+}
+
+/// Downloads the published index shortly after startup, then every
+/// [`INDEX_REFRESH_PERIOD`].
+pub(crate) async fn refresh_periodically(state: Arc<DaemonState>) {
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    loop {
+        let _ = refresh_index(&state).await;
+        tokio::time::sleep(INDEX_REFRESH_PERIOD).await;
+    }
 }
 
 /// `runtime_install`.

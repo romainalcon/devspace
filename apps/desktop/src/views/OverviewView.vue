@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { Download, Play, Power, RotateCw, Square } from "lucide-vue-next";
-import { computed } from "vue";
+import { Download, Play, Power, RotateCw, ShieldCheck, Square, Trash2 } from "lucide-vue-next";
+import { computed, ref } from "vue";
 
 import CopyCommand from "@/components/CopyCommand.vue";
 import DaemonGate from "@/components/DaemonGate.vue";
 import PageHeader from "@/components/PageHeader.vue";
 import StatusBadge from "@/components/StatusBadge.vue";
+import SystemSetupDialog from "@/components/SystemSetupDialog.vue";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -56,6 +57,14 @@ const needsSetup = computed(() => {
 });
 
 const webBusy = computed(() => isPending("web"));
+
+const systemAction = ref<"setup" | "teardown">("setup");
+const systemDialog = ref(false);
+
+function openSystem(action: "setup" | "teardown") {
+  systemAction.value = action;
+  systemDialog.value = true;
+}
 
 function webAction(method: "web_install" | "web_start" | "web_stop" | "web_restart") {
   const messages = {
@@ -200,7 +209,7 @@ function stopDaemon() {
           <CardTitle>System integrations</CardTitle>
           <CardDescription>
             Machine-wide changes that make the local domains reachable. They need administrator
-            rights and are made by the command line.
+            rights: DevSpace shows each change and asks for your approval first.
           </CardDescription>
         </CardHeader>
         <CardContent v-if="web" class="space-y-4">
@@ -220,10 +229,18 @@ function stopDaemon() {
           <Alert v-if="needsSetup">
             <AlertTitle>Setup needed</AlertTitle>
             <AlertDescription class="space-y-2">
-              <p>Run this in a terminal; it shows each change and asks for your approval:</p>
+              <p>Set up the integrations here, or in a terminal:</p>
               <CopyCommand command="devspace system setup" />
             </AlertDescription>
           </Alert>
+          <div class="flex flex-wrap gap-2">
+            <Button size="sm" :variant="needsSetup ? 'default' : 'outline'" @click="openSystem('setup')">
+              <ShieldCheck /> Set up…
+            </Button>
+            <Button size="sm" variant="outline" @click="openSystem('teardown')">
+              <Trash2 /> Remove…
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
@@ -255,4 +272,5 @@ function stopDaemon() {
       </Card>
     </div>
   </DaemonGate>
+  <SystemSetupDialog v-model:open="systemDialog" :action="systemAction" />
 </template>

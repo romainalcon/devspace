@@ -350,6 +350,10 @@ pub fn version_checks(name: RuntimeName, os: OsFamily) -> Vec<VersionCheck> {
             VersionCheck::new("initdb", "--version", "initdb (PostgreSQL) ").major_minor(),
             VersionCheck::new("psql", "--version", "psql (PostgreSQL) ").major_minor(),
         ],
+        RuntimeName::Valkey => vec![
+            VersionCheck::new("valkey-server", "--version", "Valkey server v="),
+            VersionCheck::new("valkey-cli", "--version", "valkey-cli "),
+        ],
         RuntimeName::Php => {
             let cli = VersionCheck::new("php", "-v", "PHP ").suffix(" (cli)");
             // Windows has no FastCGI process manager; PHP serving is not

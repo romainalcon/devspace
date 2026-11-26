@@ -237,6 +237,9 @@ impl Services {
         let invocation = instance
             .server(OsFamily::current())
             .map_err(|err| report(&err))?;
+        let stop_command = instance
+            .stop_command(OsFamily::current())
+            .map_err(|err| report(&err))?;
         let log = open_log(&log_file)
             .map_err(|err| format!("cannot open `{}`: {err}", log_file.display()))?;
         let log_err = log
@@ -295,6 +298,7 @@ impl Services {
                 pid_file,
                 log: log_file,
                 stop: stop_policy(key.service),
+                stop_command,
             },
             Arc::clone(state),
         ))

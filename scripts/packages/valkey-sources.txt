@@ -1,0 +1,6 @@
+# Valkey source archives built by DevSpace (.github/workflows/packages.yml).
+# SHA-256 from https://github.com/valkey-io/valkey-hashes, cross-checked by
+# downloading each archive when pinned.
+# version  sha256
+8.1.12  675bd143a4c42022f7ce10fb012a7a61e0a70b139ff166e3e63fca2bdf05027b
+9.1.4   fe3d623600a1c046b4668feec097c507b4ae52f20c1fc7f1ebd384c07a165e77
