@@ -345,7 +345,12 @@ mod tests {
             },
             Operation::RemoveHelper,
             Operation::LinkCli {
-                target: "/Applications/DevSpace.app/Contents/MacOS/devspace".into(),
+                // Absolute on every platform.
+                target: std::env::temp_dir()
+                    .join("DevSpace.app")
+                    .join("Contents")
+                    .join("MacOS")
+                    .join("devspace"),
             },
             Operation::UnlinkCli,
         ] {

@@ -43,11 +43,22 @@ fn daemon_command(home: &Path) -> Command {
     command
 }
 
+/// Standard error of the daemon, kept next to its home and quoted when it
+/// exits during startup (it only receives fatal errors in background mode).
+fn stderr_path(home: &Path) -> std::path::PathBuf {
+    home.with_extension("devspaced-stderr.log")
+}
+
+fn stderr_file(home: &Path) -> Stdio {
+    std::fs::File::create(stderr_path(home)).unwrap().into()
+}
+
 fn endpoint(home: &Path) -> Endpoint {
     Endpoint::new(&AppPaths::from_root(home).runtime_dir).unwrap()
 }
 
-async fn wait_until_ready(endpoint: &Endpoint, child: &mut Child) -> Client {
+async fn wait_until_ready(home: &Path, child: &mut Child) -> Client {
+    let endpoint = &endpoint(home);
     let deadline = Instant::now() + TIMEOUT;
     loop {
         match Client::connect(endpoint, peer()).await {
@@ -56,7 +67,8 @@ async fn wait_until_ready(endpoint: &Endpoint, child: &mut Child) -> Client {
             Err(err) => panic!("unexpected connection error: {err:?}"),
         }
         if let Some(status) = child.try_wait().unwrap() {
-            panic!("daemon exited during startup: {status}");
+            let stderr = std::fs::read_to_string(stderr_path(home)).unwrap_or_default();
+            panic!("daemon exited during startup: {status}\n{stderr}");
         }
         assert!(Instant::now() < deadline, "daemon not ready in time");
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -82,12 +94,12 @@ async fn serve_refuse_second_instance_and_shut_down() {
     let home = tempfile::tempdir().unwrap();
     let endpoint = endpoint(home.path());
     let mut child = daemon_command(home.path())
-        .stderr(Stdio::null())
+        .stderr(stderr_file(home.path()))
         .spawn()
         .unwrap();
     let _guard = KillOnPanic(child.id());
 
-    let mut client = wait_until_ready(&endpoint, &mut child).await;
+    let mut client = wait_until_ready(home.path(), &mut child).await;
     assert_eq!(client.daemon().pid, child.id());
     assert_eq!(client.request(Request::Ping).await.unwrap(), Response::Pong);
     let Response::Status(status) = client.request(Request::Status).await.unwrap() else {
@@ -135,18 +147,21 @@ async fn serve_refuse_second_instance_and_shut_down() {
 
     // The lock is released: the daemon can start again.
     let mut child = daemon_command(home.path())
-        .stderr(Stdio::null())
+        .stderr(stderr_file(home.path()))
         .spawn()
         .unwrap();
     let _guard = KillOnPanic(child.id());
-    let mut client = wait_until_ready(&endpoint, &mut child).await;
+    let mut client = wait_until_ready(home.path(), &mut child).await;
     client.request(Request::Shutdown).await.unwrap();
     assert!(wait_for_exit(&mut child).await.success());
 }
 
 async fn start_daemon(home: &Path) -> (Child, Client) {
-    let mut child = daemon_command(home).stderr(Stdio::null()).spawn().unwrap();
-    let client = wait_until_ready(&endpoint(home), &mut child).await;
+    let mut child = daemon_command(home)
+        .stderr(stderr_file(home))
+        .spawn()
+        .unwrap();
+    let client = wait_until_ready(home, &mut child).await;
     (child, client)
 }
 
@@ -241,13 +256,12 @@ async fn project_registry_is_served_and_persisted() {
 #[tokio::test]
 async fn sigterm_triggers_graceful_shutdown() {
     let home = tempfile::tempdir().unwrap();
-    let endpoint = endpoint(home.path());
     let mut child = daemon_command(home.path())
-        .stderr(Stdio::null())
+        .stderr(stderr_file(home.path()))
         .spawn()
         .unwrap();
     let _guard = KillOnPanic(child.id());
-    let client = wait_until_ready(&endpoint, &mut child).await;
+    let client = wait_until_ready(home.path(), &mut child).await;
     drop(client);
 
     let killed = Command::new("kill")
