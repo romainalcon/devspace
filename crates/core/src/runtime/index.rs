@@ -518,14 +518,14 @@ pub(crate) mod tests {
     }
 
     /// Whether the index is expected to publish `name` for `target`.
-    /// MySQL publishes no macOS x86_64 build, and only a full Linux ARM64
-    /// archive larger than [`MAX_ARCHIVE_LEN`].
+    /// MySQL publishes no macOS x86_64 build; Valkey is built by DevSpace
+    /// for macOS and Linux only.
     fn expected(name: RuntimeName, target: Target) -> bool {
         !matches!(
             (name, target.os, target.arch),
             (_, OsFamily::Windows, Arch::Aarch64)
                 | (RuntimeName::Mysql, OsFamily::MacOs, Arch::X86_64)
-                | (RuntimeName::Mysql, OsFamily::Linux, Arch::Aarch64)
+                | (RuntimeName::Valkey, OsFamily::Windows, _)
         )
     }
 

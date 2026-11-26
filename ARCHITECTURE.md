@@ -80,8 +80,10 @@ platform  ←  registry (tool)
 - `desktop` must never depend on `core`: all business operations go through
   the daemon via `ipc`.
 - No crate other than `platform` may use `cfg(target_os = …)`, `cfg(unix)`,
-  `cfg(windows)` or call OS APIs. Exception: tests may use `cfg` to exercise
-  behaviour that only exists on some platforms (e.g. Unix signals).
+  `cfg(windows)` or call OS APIs. Exceptions: tests may use `cfg` to
+  exercise behaviour that only exists on some platforms (e.g. Unix
+  signals); the desktop shell may use `cfg(target_os = …)` only to select
+  Tauri APIs that exist on some platforms (`RunEvent::Reopen`, macOS).
 
 ## Cross-cutting concerns
 
@@ -600,3 +602,4 @@ each block having a `SAFETY:` comment.
 | 57 | 2026-11-26 | Valkey rather than Redis, built by DevSpace (8.1 and 9.1). | BSD-licensed, protocol-compatible; neither project publishes relocatable macOS builds. Sources pinned by the official hashes. |
 | 58 | 2026-11-26 | MySQL Linux ARM64 from the full archive; archive limit raised to 1 GiB, downloads to 25 min. | Approved by the user; Oracle publishes no minimal ARM64 archive (≈ 790/930 MiB, 1.5–1.8 GiB extracted, under the 2 GiB extraction limit). MD5 cross-checked with Oracle's download page. |
 | 59 | 2026-11-26 | Graceful stop on Windows with the servers' own tools. | Console-less processes cannot receive Ctrl+C; `pg_ctl` and `mysqladmin` are shipped with the servers. |
+| 60 | 2026-11-26 | `cfg(target_os)` allowed in the desktop shell for platform-specific Tauri APIs only. | `RunEvent::Reopen` (Dock icon) exists only on macOS; `platform` cannot wrap a Tauri type without depending on Tauri. |

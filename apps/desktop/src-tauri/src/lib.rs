@@ -163,14 +163,22 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         })
         .build(tauri::generate_context!())?;
 
-    app.run(|app, event| {
-        // macOS: a click on the Dock icon brings the hidden window back.
-        if let RunEvent::Reopen { .. } = event {
-            show_main_window(app);
-        }
-    });
+    app.run(on_run_event);
     Ok(())
 }
+
+/// macOS: a click on the Dock icon brings the hidden window back
+/// (`RunEvent::Reopen` only exists there).
+#[cfg(target_os = "macos")]
+fn on_run_event(app: &AppHandle, event: RunEvent) {
+    if let RunEvent::Reopen { .. } = event {
+        show_main_window(app);
+    }
+}
+
+/// Other platforms reopen the window from the tray menu.
+#[cfg(not(target_os = "macos"))]
+fn on_run_event(_app: &AppHandle, _event: RunEvent) {}
 
 fn show_main_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window(MAIN_WINDOW) else {

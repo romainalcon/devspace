@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "serial": 2,
+  "serial": 3,
   "runtimes": {
     "mysql": {
       "8.4.13.1": {
@@ -45,6 +45,20 @@
           "bin": [
             "bin"
           ]
+        },
+        "linux-aarch64": {
+          "archives": [
+            {
+              "url": "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.13.1-linux-glibc2.28-aarch64.tar.xz",
+              "sha256": "ac92df293a881d88e01402e16a1d512cde8f22fbb087ecf2a2a610355e04dc03",
+              "size": 823816924,
+              "format": "tar.xz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
         }
       },
       "9.7.4.1": {
@@ -83,6 +97,20 @@
               "sha256": "1989c9a63674c01b0851523f6eaf21f1f4e233e678858423b5b9b6a24420b546",
               "size": 344069278,
               "format": "zip",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-aarch64": {
+          "archives": [
+            {
+              "url": "https://cdn.mysql.com/Downloads/MySQL-9.7/mysql-9.7.4.1-linux-glibc2.28-aarch64.tar.xz",
+              "sha256": "4b0a499acb6bc7761ad507f92ea3b0e2d0e2872c23a284f9e8a8586911f9315a",
+              "size": 979411956,
+              "format": "tar.xz",
               "strip_components": 1
             }
           ],
@@ -723,6 +751,124 @@
               "sha256": "5b0ceae52de3dbb356a2003fd95c5a323e220bab1e1b6e3ba3bb0da61f8b9ef9",
               "size": 50076707,
               "format": "zip",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        }
+      }
+    },
+    "valkey": {
+      "8.1.12": {
+        "linux-aarch64": {
+          "archives": [
+            {
+              "url": "https://github.com/romainalcon/devspace/releases/download/valkey-8.1.12/valkey-8.1.12-linux-aarch64.tar.gz",
+              "sha256": "2f8b8f649a703f785b83594bce391b9c9526b50cb222d819daf0385e6c312bdf",
+              "size": 2164196,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-x86_64": {
+          "archives": [
+            {
+              "url": "https://github.com/romainalcon/devspace/releases/download/valkey-8.1.12/valkey-8.1.12-linux-x86_64.tar.gz",
+              "sha256": "217aa0ee49c910f1661892e623098d42b2816113f5de783e6e5ff5ae979df33b",
+              "size": 2176769,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "macos-aarch64": {
+          "archives": [
+            {
+              "url": "https://github.com/romainalcon/devspace/releases/download/valkey-8.1.12/valkey-8.1.12-macos-aarch64.tar.gz",
+              "sha256": "22d98608d6ebe81fa5b63d81a3dda2ad0bf5649f77e9f9a3a27e3b77be6e08c3",
+              "size": 1117240,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "macos-x86_64": {
+          "archives": [
+            {
+              "url": "https://github.com/romainalcon/devspace/releases/download/valkey-8.1.12/valkey-8.1.12-macos-x86_64.tar.gz",
+              "sha256": "86ff9a6c38a7113b09f049a491f18e8980c514a619384cae6d2221db02cbee95",
+              "size": 1224242,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        }
+      },
+      "9.1.4": {
+        "linux-aarch64": {
+          "archives": [
+            {
+              "url": "https://github.com/romainalcon/devspace/releases/download/valkey-9.1.4/valkey-9.1.4-linux-aarch64.tar.gz",
+              "sha256": "abdb08a089e2bc80bf9f73ac89ec1cf04677c672e34362492b616d19b4c6a427",
+              "size": 2435312,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "linux-x86_64": {
+          "archives": [
+            {
+              "url": "https://github.com/romainalcon/devspace/releases/download/valkey-9.1.4/valkey-9.1.4-linux-x86_64.tar.gz",
+              "sha256": "02f86a9586c4e380e5eacc33664145e9ea6b7d2d9e6c1f490b360b27e7f40fcb",
+              "size": 2459680,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "macos-aarch64": {
+          "archives": [
+            {
+              "url": "https://github.com/romainalcon/devspace/releases/download/valkey-9.1.4/valkey-9.1.4-macos-aarch64.tar.gz",
+              "sha256": "4eaa86649bc17d3247b4a3d04f62eb74f826f0932960ec9e499cd85ecea43107",
+              "size": 1557366,
+              "format": "tar.gz",
+              "strip_components": 1
+            }
+          ],
+          "bin": [
+            "bin"
+          ]
+        },
+        "macos-x86_64": {
+          "archives": [
+            {
+              "url": "https://github.com/romainalcon/devspace/releases/download/valkey-9.1.4/valkey-9.1.4-macos-x86_64.tar.gz",
+              "sha256": "6be5a72565cf48d3769edf69723e4bc5afe26eeff63fcd982612f1ff2e371546",
+              "size": 1756427,
+              "format": "tar.gz",
               "strip_components": 1
             }
           ],

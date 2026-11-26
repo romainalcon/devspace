@@ -345,12 +345,23 @@ raised), still none on macOS x86_64.
   9.1.4 built locally and supervised by the daemon (start, `PING` through
   `devspace exec`, private socket, data saved at stop, nothing left
   running); remote index download reported (404 before publication).
-- ⏳ Public repository created and pushed; first CI, `Packages` and
-  `Release` runs.
-- ⏳ Index #3 (Valkey 8.1.12 and 9.1.4 from the `Packages` workflow,
-  MySQL Linux ARM64) signed by the maintainer and published; until then
-  `embedded_index_is_signed_and_covers_every_platform` fails and Valkey
-  cannot be installed.
+- ✅ Public repository `romainalcon/devspace` created and pushed; updater
+  key added to its secrets.
+- ✅ Valkey 8.1.12 and 9.1.4 built by the `Packages` workflow for macOS
+  and Linux (ARM64, x86_64); index #3 (Valkey, MySQL Linux ARM64) signed
+  by the maintainer on 2026-11-26 and published as the release `index`.
+- ✅ Real run on macOS ARM64 with index #3: Valkey 9.1.4 and 8.1.12
+  installed from the releases (download, SHA-256, version checks),
+  started by the daemon, answering through `devspace exec -- valkey-cli`,
+  nothing left after `daemon stop`.
+- ✅ Fixes from the first runs: the first Valkey archives aborted at
+  startup (a full `strip` removed the symbols Valkey 9 loads its Lua
+  engine with; deleted before any index referenced them, rebuilt with
+  `strip -S`, and the build now checks that the server answers `PING`);
+  clippy 1.100 (`chunks_exact_to_as_chunks`); test helpers only used by
+  macOS/Unix tests failed on Linux and Windows (dead code, M3–M7, never
+  run before); CI clippy runs with `--keep-going`.
+- ⏳ First `Release` run (tag `v0.1.0`).
 - ⏳ Real `system setup|teardown` with sudo and from the application
   (needs the user's password); update installed from a published release.
 - ⚠️ Windows and Linux bundles, the NSIS `PATH` hooks, the Windows stop
