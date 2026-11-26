@@ -8,7 +8,8 @@
 //!   with peer identity checks, provided by `devspace-platform`;
 //! - [`framing`]: length-prefixed JSON frames;
 //! - [`protocol`]: versioned messages and handshake;
-//! - [`Client`] / [`ServerConnection`]: typed endpoints of a connection.
+//! - [`Client`] / [`ServerConnection`]: typed endpoints of a connection;
+//! - [`launcher`]: starting, stopping and probing the daemon from a client.
 //!
 //! A connection starts with a handshake: the client sends
 //! [`ClientMessage::Hello`] with its [`PROTOCOL_VERSION`]; the daemon answers
@@ -19,6 +20,7 @@
 pub mod client;
 pub mod error;
 pub mod framing;
+pub mod launcher;
 pub mod protocol;
 pub mod server;
 

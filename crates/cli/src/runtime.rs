@@ -7,19 +7,12 @@ use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use devspace_core::AppPaths;
 use devspace_ipc::{Endpoint, Request, Response, RuntimeEnv, RuntimeList};
 
 use crate::client::{self, unexpected};
 use crate::error::CliError;
-
-/// Time limit of `runtime install` (downloads of up to a few hundred MB).
-const INSTALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-
-/// Time limit of the other runtime requests.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Runtime subcommands.
 #[derive(Debug, Clone, clap::Subcommand)]
@@ -47,20 +40,18 @@ pub enum RuntimeCommand {
 /// Runs a runtime subcommand.
 pub fn execute(command: RuntimeCommand, paths: &AppPaths) -> Result<ExitCode, CliError> {
     let endpoint = Endpoint::new(&paths.runtime_dir)?;
-    let (request, timeout) = match command {
-        RuntimeCommand::List => (Request::RuntimeList, REQUEST_TIMEOUT),
+    let request = match command {
+        RuntimeCommand::List => Request::RuntimeList,
         RuntimeCommand::Install { name, version } => {
             println!(
                 "installing {name} {} (download and verification may take a few minutes)…",
                 version.as_deref().unwrap_or("(newest)")
             );
-            (Request::RuntimeInstall { name, version }, INSTALL_TIMEOUT)
+            Request::RuntimeInstall { name, version }
         }
-        RuntimeCommand::Remove { name, version } => {
-            (Request::RuntimeRemove { name, version }, REQUEST_TIMEOUT)
-        }
+        RuntimeCommand::Remove { name, version } => Request::RuntimeRemove { name, version },
     };
-    let response = client::block_on(send(&endpoint, request, timeout))??;
+    let response = client::block_on(send(&endpoint, request))??;
     match response {
         Response::Runtimes(list) => print!("{}", format_list(&list)),
         Response::RuntimeInstalled(runtime) if runtime.changed => println!(
@@ -83,13 +74,9 @@ pub fn execute(command: RuntimeCommand, paths: &AppPaths) -> Result<ExitCode, Cl
     Ok(ExitCode::SUCCESS)
 }
 
-async fn send(
-    endpoint: &Endpoint,
-    request: Request,
-    timeout: Duration,
-) -> Result<Response, CliError> {
+async fn send(endpoint: &Endpoint, request: Request) -> Result<Response, CliError> {
     let mut client = client::connect(endpoint).await?;
-    client::request_with_timeout(&mut client, request, timeout).await
+    client::request(&mut client, request).await
 }
 
 fn format_list(list: &RuntimeList) -> String {
@@ -134,11 +121,7 @@ pub fn exec(command: &[OsString], paths: &AppPaths) -> Result<ExitCode, CliError
     };
     let endpoint = Endpoint::new(&paths.runtime_dir)?;
     let directory = std::env::current_dir().map_err(CliError::CurrentDir)?;
-    let env = match client::block_on(send(
-        &endpoint,
-        Request::RuntimeEnv { directory },
-        REQUEST_TIMEOUT,
-    ))?? {
+    let env = match client::block_on(send(&endpoint, Request::RuntimeEnv { directory }))?? {
         Response::RuntimeEnv(env) => env,
         _ => return Err(unexpected("runtime environment")),
     };

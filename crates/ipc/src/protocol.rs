@@ -24,6 +24,7 @@
 //! requests.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -147,8 +148,9 @@ pub enum Request {
     RuntimeInstall {
         /// Runtime name (`php`, `node`).
         name: String,
-        /// `MAJOR`, `MAJOR.MINOR` or `MAJOR.MINOR.PATCH`; the newest
-        /// published match is installed. Absent: the newest version.
+        /// `MAJOR`, `MAJOR.MINOR`, `MAJOR.MINOR.PATCH` or
+        /// `MAJOR.MINOR.PATCH.BUILD`; the newest published match is
+        /// installed. Absent: the newest version.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         version: Option<String>,
     },
@@ -187,6 +189,39 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         series: Option<String>,
     },
+}
+
+impl Request {
+    /// Time a client waits for the response before giving up.
+    ///
+    /// Downloads and service initialisations legitimately take minutes; the
+    /// other requests answer within seconds. Shared by every client so that
+    /// the CLI and the desktop application wait the same time.
+    #[must_use]
+    pub fn time_limit(&self) -> Duration {
+        const MINUTE: u64 = 60;
+        let secs = match self {
+            Self::Ping
+            | Self::Status
+            | Self::Shutdown
+            | Self::ProjectAdd { .. }
+            | Self::ProjectList
+            | Self::ProjectRemove { .. } => 10,
+            // Stop, then start, of Caddy and of the PHP process managers.
+            Self::WebStart | Self::WebStop | Self::WebRestart | Self::WebStatus => 45,
+            // Download of about 20 MB.
+            Self::WebInstall => 15 * MINUTE,
+            // Downloads of up to a few hundred MB.
+            Self::RuntimeInstall { .. } => 30 * MINUTE,
+            Self::RuntimeList
+            | Self::RuntimeRemove { .. }
+            | Self::RuntimeEnv { .. }
+            | Self::ServiceList => MINUTE,
+            // The first start initialises the data directory.
+            Self::ServiceStart { .. } | Self::ServiceStop { .. } => 10 * MINUTE,
+        };
+        Duration::from_secs(secs)
+    }
 }
 
 /// Answers of the daemon.
@@ -562,6 +597,26 @@ mod tests {
             &serde_json::from_value::<T>(expected.clone()).unwrap(),
             message
         );
+    }
+
+    #[test]
+    fn long_requests_get_long_time_limits() {
+        let quick = Request::ProjectList.time_limit();
+        let install = Request::RuntimeInstall {
+            name: "php".into(),
+            version: None,
+        }
+        .time_limit();
+        let service = Request::ServiceStart {
+            name: "mysql".into(),
+            series: None,
+        }
+        .time_limit();
+        assert_eq!(quick, Duration::from_secs(10));
+        assert!(Request::WebInstall.time_limit() >= Duration::from_secs(10 * 60));
+        assert!(install >= Duration::from_secs(30 * 60));
+        assert!(service > Request::ServiceList.time_limit());
+        assert!(Request::WebRestart.time_limit() > quick);
     }
 
     #[test]

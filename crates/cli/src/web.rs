@@ -5,7 +5,6 @@
 
 use std::fmt::Write as _;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use devspace_core::AppPaths;
 use devspace_ipc::{
@@ -15,12 +14,6 @@ use devspace_ipc::{
 
 use crate::client::{self, unexpected};
 use crate::error::CliError;
-
-/// Time limit of `web install` (download of about 20 MB).
-const INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-
-/// Time limit of `web start|restart|stop` (stop, then start, of Caddy).
-const CONTROL_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Web server subcommands.
 #[derive(Debug, Clone, Copy, clap::Subcommand)]
@@ -40,29 +33,25 @@ pub enum WebCommand {
 /// Runs a web subcommand.
 pub fn execute(command: WebCommand, paths: &AppPaths) -> Result<ExitCode, CliError> {
     let endpoint = Endpoint::new(&paths.runtime_dir)?;
-    let (request, timeout) = match command {
+    let request = match command {
         WebCommand::Install => {
             println!("installing Caddy (download and verification may take a minute)…");
-            (Request::WebInstall, INSTALL_TIMEOUT)
+            Request::WebInstall
         }
-        WebCommand::Start => (Request::WebStart, CONTROL_TIMEOUT),
-        WebCommand::Stop => (Request::WebStop, CONTROL_TIMEOUT),
-        WebCommand::Restart => (Request::WebRestart, CONTROL_TIMEOUT),
-        WebCommand::Status => (Request::WebStatus, CONTROL_TIMEOUT),
+        WebCommand::Start => Request::WebStart,
+        WebCommand::Stop => Request::WebStop,
+        WebCommand::Restart => Request::WebRestart,
+        WebCommand::Status => Request::WebStatus,
     };
-    let status = client::block_on(fetch(&endpoint, request, timeout))??;
+    let status = client::block_on(fetch(&endpoint, request))??;
     print!("{}", format_status(&status));
     Ok(ExitCode::SUCCESS)
 }
 
 /// Sends a web request and returns the resulting status.
-pub async fn fetch(
-    endpoint: &Endpoint,
-    request: Request,
-    timeout: Duration,
-) -> Result<WebStatus, CliError> {
+pub async fn fetch(endpoint: &Endpoint, request: Request) -> Result<WebStatus, CliError> {
     let mut client = client::connect(endpoint).await?;
-    match client::request_with_timeout(&mut client, request, timeout).await? {
+    match client::request(&mut client, request).await? {
         Response::WebStatus(status) => Ok(*status),
         _ => Err(unexpected("web status")),
     }

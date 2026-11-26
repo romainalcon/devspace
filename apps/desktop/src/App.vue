@@ -1,160 +1,90 @@
 <script setup lang="ts">
-import { ref } from "vue";
-import { invoke } from "@tauri-apps/api/core";
+import { Boxes, Database, FolderGit2, LayoutDashboard } from "lucide-vue-next";
+import type { Component } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import "vue-sonner/style.css";
 
-const greetMsg = ref("");
-const name = ref("");
+import StatusBadge from "@/components/StatusBadge.vue";
+import { Toaster } from "@/components/ui/sonner";
+import type { Tone } from "@/lib/format";
+import { startPolling, store } from "@/lib/store";
+import { cn } from "@/lib/utils";
+import OverviewView from "@/views/OverviewView.vue";
+import ProjectsView from "@/views/ProjectsView.vue";
+import RuntimesView from "@/views/RuntimesView.vue";
+import ServicesView from "@/views/ServicesView.vue";
 
-async function greet() {
-  // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-  greetMsg.value = await invoke("greet", { name: name.value });
-}
+type Page = "overview" | "projects" | "runtimes" | "services";
+
+const pages: { id: Page; label: string; icon: Component; view: Component }[] = [
+  { id: "overview", label: "Overview", icon: LayoutDashboard, view: OverviewView },
+  { id: "projects", label: "Projects", icon: FolderGit2, view: ProjectsView },
+  { id: "runtimes", label: "Runtimes", icon: Boxes, view: RuntimesView },
+  { id: "services", label: "Services", icon: Database, view: ServicesView },
+];
+
+const current = ref<Page>("overview");
+const view = computed(() => pages.find((p) => p.id === current.value)?.view ?? OverviewView);
+
+const daemonBadge = computed((): { tone: Tone; label: string } => {
+  switch (store.daemon?.state) {
+    case "running":
+      return { tone: "success", label: "Daemon running" };
+    case "starting":
+    case undefined:
+      return { tone: "warning", label: "Daemon starting" };
+    case "stopping":
+      return { tone: "warning", label: "Daemon stopping" };
+    case "stopped":
+      return store.daemon.last_error
+        ? { tone: "danger", label: "Daemon failed" }
+        : { tone: "neutral", label: "Daemon stopped" };
+    case "unknown":
+      return { tone: "danger", label: "Daemon not responding" };
+  }
+});
+
+let stopPolling: (() => void) | undefined;
+onMounted(() => (stopPolling = startPolling()));
+onBeforeUnmount(() => stopPolling?.());
 </script>
 
 <template>
-  <main class="container">
-    <h1>Welcome to Tauri + Vue</h1>
+  <div class="flex h-full">
+    <aside class="bg-sidebar text-sidebar-foreground flex w-56 shrink-0 flex-col border-r">
+      <div class="px-5 pt-6 pb-4">
+        <p class="text-base font-semibold tracking-tight">DevSpace</p>
+        <p class="text-muted-foreground text-xs">Local development environments</p>
+      </div>
+      <nav class="flex flex-1 flex-col gap-0.5 px-3">
+        <button
+          v-for="page in pages"
+          :key="page.id"
+          type="button"
+          :class="
+            cn(
+              'flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors',
+              current === page.id
+                ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
+                : 'text-muted-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-foreground',
+            )
+          "
+          @click="current = page.id"
+        >
+          <component :is="page.icon" class="size-4" />
+          {{ page.label }}
+        </button>
+      </nav>
+      <div class="border-t px-5 py-4">
+        <StatusBadge v-bind="daemonBadge" />
+      </div>
+    </aside>
 
-    <div class="row">
-      <a href="https://vite.dev" target="_blank">
-        <img src="/vite.svg" class="logo vite" alt="Vite logo" />
-      </a>
-      <a href="https://tauri.app" target="_blank">
-        <img src="/tauri.svg" class="logo tauri" alt="Tauri logo" />
-      </a>
-      <a href="https://vuejs.org/" target="_blank">
-        <img src="./assets/vue.svg" class="logo vue" alt="Vue logo" />
-      </a>
-    </div>
-    <p>Click on the Tauri, Vite, and Vue logos to learn more.</p>
-
-    <form class="row" @submit.prevent="greet">
-      <input id="greet-input" v-model="name" placeholder="Enter a name..." />
-      <button type="submit">Greet</button>
-    </form>
-    <p>{{ greetMsg }}</p>
-  </main>
+    <main class="min-w-0 flex-1 overflow-y-auto">
+      <div class="mx-auto max-w-5xl px-8 py-8">
+        <component :is="view" />
+      </div>
+    </main>
+  </div>
+  <Toaster position="bottom-right" rich-colors />
 </template>
-
-<style scoped>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.vue:hover {
-  filter: drop-shadow(0 0 2em #249b73);
-}
-
-</style>
-<style>
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
-}
-
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
-  display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
-
-  a:hover {
-    color: #24c8db;
-  }
-
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
-  }
-  button:active {
-    background-color: #0f0f0f69;
-  }
-}
-
-</style>

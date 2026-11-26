@@ -6,6 +6,7 @@
 //!
 //! Modules:
 //! - [`fs`]: portable filesystem helpers (path canonicalisation).
+//! - [`instance`]: single-instance lock of the daemon (OS advisory lock).
 //! - [`paths`]: resolution of the application directories following each OS
 //!   conventions.
 //! - [`privileges`]: detection of elevated (root / administrator) execution.
@@ -20,6 +21,7 @@
 
 pub mod error;
 pub mod fs;
+pub mod instance;
 pub mod local_socket;
 pub mod paths;
 pub mod privileges;

@@ -31,7 +31,8 @@ binaries and **without requiring Docker**.
 ## Functional requirements
 
 Requirements are tagged with the milestone delivering them. M0 to M4
-items are implemented and validated, as are M5 items.
+items are implemented and validated, as are M5 items. M6 items are
+implemented and awaiting validation by the user.
 
 ### Implemented (M0)
 
@@ -92,7 +93,7 @@ items are implemented and validated, as are M5 items.
 |---|---|
 | F-4.1 | The package index embedded in DevSpace is used only if its signature matches the embedded DevSpace public key; it lists, per runtime version and platform, HTTPS archive URLs with their size and SHA-256. |
 | F-4.2 | `devspace runtime list` prints the index serial, the platform, and every published or installed version of PHP and Node.js with its state. |
-| F-4.3 | `devspace runtime install NAME [VERSION]` installs the newest published version matching `VERSION` (`MAJOR`, `MAJOR.MINOR` or exact; newest overall if absent) in `<data>/runtimes/NAME/VERSION/`. Each archive is downloaded over HTTPS (at most its declared size), verified against its SHA-256, extracted without leaving the installation directory, and the programs must report the expected version; otherwise nothing is installed. Installing an installed version does nothing. |
+| F-4.3 | `devspace runtime install NAME [VERSION]` installs the newest published version matching `VERSION` (`MAJOR`, `MAJOR.MINOR` or exact, including a rebuild such as `9.7.4.1`; newest overall if absent) in `<data>/runtimes/NAME/VERSION/`. Each archive is downloaded over HTTPS (at most its declared size), verified against its SHA-256, extracted without leaving the installation directory, and the programs must report the expected version; otherwise nothing is installed. Installing an installed version does nothing. |
 | F-4.4 | `devspace runtime remove NAME VERSION` removes an installed version; its PHP-FPM is stopped first and the sites are reloaded. |
 | F-4.5 | Several versions of a runtime can be installed side by side; installing or removing one never modifies another. |
 | F-4.6 | `[runtimes] php` and `node` in `devspace.toml` select the newest installed version matching the requirement; without a requirement, the newest installed version is used. |
@@ -116,6 +117,20 @@ items are implemented and validated, as are M5 items.
 | F-5.10 | Removing a service version stops its instance first; the daemon stops every server when it stops, and stops those left by a crashed daemon at startup. |
 | F-5.11 | Service commands require the daemon (F-2.7). |
 
+### Implemented (M6)
+
+| ID | Requirement |
+|---|---|
+| F-6.1 | The desktop application (`devspace-desktop`) talks to the daemon through the IPC protocol only. It refuses to run elevated. |
+| F-6.2 | When it starts, it starts the daemon (`devspaced` next to its executable) unless it runs, like `devspace daemon start` (F-1.1); a failure is shown with the daemon's error output. Quitting the application leaves the daemon running. |
+| F-6.3 | An icon in the menu bar (notification area) shows the daemon state and offers Open DevSpace, Start/Stop daemon and Quit. Closing the window hides it; on macOS a click on the Dock icon shows it again. |
+| F-6.4 | Overview: daemon (version, pid, uptime, stop), web server (Caddy installation, state, start/stop/restart, address and ports, DNS server, CA fingerprint, failures), state of the three system integrations with the `devspace system setup` command to copy when one is missing or outdated, PHP-FPM masters. |
+| F-6.5 | Projects: registered projects with their domain and what they serve (or why not); add a directory chosen with the system folder picker or typed, with an optional name (F-2.2, F-2.3); remove after confirmation (F-2.5, files kept); open the site in the default browser; show the directory in the file manager. |
+| F-6.6 | Runtimes: published and installed versions of the language runtimes, install and remove (F-4.3, F-4.4). |
+| F-6.7 | Services: instances with version, address and port, user, why they run, state, blocking reasons and failures; start and stop (F-5.4); unmet requirements (F-5.3); published and installed versions of PostgreSQL and MySQL, install and remove. |
+| F-6.8 | While the window is visible the state is refreshed every 2 s (daemon, projects, services) and every 10 s (web server, package index), and after every action; changes made with the CLI appear without action. Long actions show a notification until they end; failures show the daemon's message. |
+| F-6.9 | The light or dark appearance follows the system. |
+
 ### Planned
 
 | ID | Milestone | Requirement |
@@ -123,7 +138,7 @@ items are implemented and validated, as are M5 items.
 | F-3.10 | M3+ | System integrations on Linux and Windows. |
 | F-4.10 | M4+ | PHP sites on Windows; remote index updates (M7). |
 | F-5.12 | M7 | Redis/Valkey (needs DevSpace builds and a hosting); MySQL on macOS x86_64 and Linux ARM64; graceful stop of the servers on Windows. |
-| F-6 | M6 | Desktop application on top of the IPC API. |
+| F-6.10 | M7 | Desktop installers bundling `devspaced`, `devspace` and `devspace-helper`; `system setup|teardown` from the application. |
 
 ## Configuration reference (schema version 1)
 
@@ -240,7 +255,8 @@ Any request may instead be answered with `error`: `code` (`invalid_request`,
 `already_exists`, `not_found`, `unavailable`, `failed`, `internal`) and a
 human-readable `message`; the connection stays open. `added_at` is in
 seconds since the Unix epoch. `web_install` and `runtime_install` may take
-minutes; clients use a longer timeout for them.
+minutes; every client waits the time given by `Request::time_limit` (from
+10 s to 30 min, see `ARCHITECTURE.md`).
 
 Version history: 1 (M1) `ping`, `status`, `shutdown`; 2 (M2) project
 requests and `error` responses; 3 (M3) web requests, `unavailable` and

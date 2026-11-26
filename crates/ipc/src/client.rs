@@ -16,9 +16,6 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Maximum time for the handshake once connected.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Maximum time between sending a request and receiving its response.
-pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// A connection to the daemon whose handshake succeeded.
 #[derive(Debug)]
 pub struct Client<S = ClientStream> {
@@ -114,19 +111,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         &self.daemon
     }
 
-    /// Sends `request` and waits for its response.
+    /// Sends `request` and waits for its response, at most
+    /// [`Request::time_limit`].
     ///
     /// # Errors
     ///
-    /// Returns [`IpcError::Timeout`] after [`REQUEST_TIMEOUT`],
+    /// Returns [`IpcError::Timeout`] after the time limit,
     /// [`IpcError::ConnectionClosed`], [`IpcError::UnexpectedMessage`] for a
     /// response to another request, or a framing error.
     pub async fn request(&mut self, request: Request) -> Result<Response> {
-        self.request_with_timeout(request, REQUEST_TIMEOUT).await
+        let timeout = request.time_limit();
+        self.request_with_timeout(request, timeout).await
     }
 
     /// Like [`Client::request`], with a custom time limit for requests that
-    /// legitimately take long (e.g. downloads). After a timeout the
+    /// must not wait as long as usual. After a timeout the
     /// connection must be dropped: a late response would be mistaken for
     /// the answer to the next request.
     ///

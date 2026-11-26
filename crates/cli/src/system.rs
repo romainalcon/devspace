@@ -9,7 +9,6 @@
 use std::io::{self, BufRead as _, IsTerminal as _, Write as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use devspace_core::AppPaths;
 use devspace_helper::{Certificate, HELPER_NAME, LoopbackAddress, Operation, Tld};
@@ -56,7 +55,7 @@ pub struct Step {
 /// Runs a system subcommand.
 pub fn execute(command: SystemCommand, paths: &AppPaths) -> Result<ExitCode, CliError> {
     let endpoint = Endpoint::new(&paths.runtime_dir)?;
-    let status = client::block_on(web::fetch(&endpoint, Request::WebStatus, STATUS_TIMEOUT))??;
+    let status = client::block_on(web::fetch(&endpoint, Request::WebStatus))??;
     match command {
         SystemCommand::Setup { yes } => setup(&endpoint, &status, yes),
         SystemCommand::Teardown { yes } => {
@@ -69,12 +68,6 @@ pub fn execute(command: SystemCommand, paths: &AppPaths) -> Result<ExitCode, Cli
         }
     }
 }
-
-/// Time limit of the status requests.
-const STATUS_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Time limit of a web server start.
-const START_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Setup runs in two phases when the local CA does not exist yet: the
 /// network integrations first, then (once the web server could start on
@@ -102,10 +95,10 @@ fn setup(endpoint: &Endpoint, status: &WebStatus, yes: bool) -> Result<ExitCode,
     }
 
     // The web server can now listen on the sites address.
-    let mut status = client::block_on(web::fetch(endpoint, Request::WebStatus, STATUS_TIMEOUT))??;
+    let mut status = client::block_on(web::fetch(endpoint, Request::WebStatus))??;
     if status.caddy_installed && !matches!(status.server, WebServerState::Running { .. }) {
         println!("starting the web server…");
-        status = client::block_on(web::fetch(endpoint, Request::WebStart, START_TIMEOUT))??;
+        status = client::block_on(web::fetch(endpoint, Request::WebStart))??;
     }
     if waits_for_ca {
         let plan = setup_plan(&status)?;

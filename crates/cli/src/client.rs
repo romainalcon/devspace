@@ -1,8 +1,8 @@
 //! Connection to the daemon, shared by the commands that use it.
 
 use std::future::Future;
-use std::time::Duration;
 
+use devspace_ipc::launcher;
 use devspace_ipc::{Client, Endpoint, ErrorResponse, IpcError, PeerInfo, Request, Response};
 
 use crate::error::CliError;
@@ -16,7 +16,8 @@ pub fn block_on<F: Future>(future: F) -> Result<F::Output, CliError> {
     Ok(runtime.block_on(future))
 }
 
-fn peer_info() -> PeerInfo {
+/// Identity of the CLI in the handshake.
+pub fn peer_info() -> PeerInfo {
     PeerInfo {
         name: "devspace-cli".to_owned(),
         version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -25,11 +26,7 @@ fn peer_info() -> PeerInfo {
 
 /// Connects to the daemon; `Ok(None)` means that it is not running.
 pub async fn try_connect(endpoint: &Endpoint) -> Result<Option<Client>, CliError> {
-    match Client::connect(endpoint, peer_info()).await {
-        Ok(client) => Ok(Some(client)),
-        Err(IpcError::NotRunning { .. }) => Ok(None),
-        Err(err) => Err(err.into()),
-    }
+    Ok(launcher::try_connect(endpoint, &peer_info()).await?)
 }
 
 /// Connects to the daemon, which must be running.
@@ -42,15 +39,6 @@ pub async fn connect(endpoint: &Endpoint) -> Result<Client, CliError> {
 /// Sends `request`, turning an error response into [`CliError::Refused`].
 pub async fn request(client: &mut Client, request: Request) -> Result<Response, CliError> {
     refused_as_error(client.request(request).await?)
-}
-
-/// Like [`request`], with a custom time limit.
-pub async fn request_with_timeout(
-    client: &mut Client,
-    request: Request,
-    timeout: Duration,
-) -> Result<Response, CliError> {
-    refused_as_error(client.request_with_timeout(request, timeout).await?)
 }
 
 fn refused_as_error(response: Response) -> Result<Response, CliError> {

@@ -27,12 +27,12 @@ use std::process::ExitCode;
 use clap::Parser;
 use devspace_core::config::GlobalConfig;
 use devspace_core::db::Database;
-use devspace_core::instance::InstanceLock;
 use devspace_core::logging::{self, LogFile, LogTargets};
 use devspace_core::runtime::{self as runtime_packages, RuntimeLayout};
 use devspace_core::service::ServiceLayout;
 use devspace_core::web::WebLayout;
 use devspace_core::{AppPaths, error::report};
+use devspace_platform::instance::InstanceLock;
 
 use crate::error::DaemonError;
 

@@ -263,12 +263,57 @@ Windows binaries, and building them needs a hosting.
   graceful stop yet), and nothing has been run there (CI, once a remote
   exists).
 
-## M6 — Desktop application ⏳
+## M6 — Desktop application ✅
 
-- Vue 3 + TypeScript + Tailwind CSS + shadcn-vue UI on the IPC API.
+Design choices approved on 2026-11-26: parity with the CLI except
+`system setup|teardown` (the application shows the integrations and the
+command to run); state refreshed by polling (no protocol change); window
+plus a menu bar icon, closing the window keeps the application; the
+daemon is started with the application.
 
-## M7 — Distribution ⏳
+- ✅ `devspace-ipc::launcher`: start, stop and status of the daemon, moved
+  from the CLI and shared with the desktop application;
+  `Request::time_limit` replaces the per-command timeouts of the CLI; the
+  single-instance lock moved from `core` to `platform`.
+- ✅ Tauri shell: commands `daemon_status|start|stop`, `daemon_request`
+  (whole protocol except `shutdown`), `open_site`, `reveal_project`;
+  daemon autostart; menu bar icon (state, start/stop, open, quit); window
+  hidden on close; refusal to run elevated; strict CSP, capabilities
+  reduced to the folder picker.
+- ✅ Interface (Vue 3, TypeScript, Tailwind CSS 4, shadcn-vue): Overview,
+  Projects, Runtimes, Services; polling every 2 s / 10 s while visible;
+  notifications for long actions; light and dark appearance.
+- ✅ Unit tests (launcher incl. early exit and unresponsive daemon, time
+  limits, desktop state and errors); `vue-tsc` and `vite build`.
+- ✅ Manual run on macOS ARM64 (`npx tauri dev`, real environment): daemon
+  started by the application, interface polling observed in the daemon
+  debug log (status, projects, services every 2 s; web and runtimes every
+  10 s), daemon still running after the application process exits.
+- ✅ Fix from that run: the first tray refresh raced with the autostart
+  (the lock probe made the start report an unresponsive daemon); probes,
+  starts and stops are now serialised in the application.
+- ✅ Fix from the user's first run: installing an exact four-component
+  version (MySQL `9.7.4.1`, from the Services page or `devspace service
+  install mysql 9.7.4.1`) was refused; version requirements now accept
+  `MAJOR.MINOR.PATCH.BUILD` (M5 bug).
+- ⚠️ No visual review of the interface from the session (screenshots
+  were not possible); the user validated the milestone without a
+  dedicated review pass.
+- ✅ Validated by the user on 2026-11-26; M7 started the same day.
+- ⚠️ The interface was not run on Windows or Linux. The tray icon uses the
+  application icon (no monochrome menu bar template yet).
+- ⚠️ No bundle including `devspaced` yet: a built application looks for
+  `devspaced` next to its executable and reports it missing (M7).
 
-- Signed installers and updates for each platform.
+## M7 — Distribution 🔄
+
+Design choices approved on 2026-11-26: releases, application updates and
+DevSpace-built packages hosted on GitHub Releases (a GitHub remote is
+created); no signing certificates yet (macOS ad-hoc signature, Windows
+unsigned; the signing steps are ready and activate when the secrets
+exist); the whole scope below stays in M7.
+
+- Signed installers and updates for each platform; the desktop bundle
+  ships `devspaced`, `devspace` and `devspace-helper`.
 - Redis/Valkey service, built by DevSpace for macOS and Linux (no
   official binaries) and hosted with the releases.

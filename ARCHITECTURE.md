@@ -31,7 +31,7 @@ that keep it maintainable. Any change to these rules must be documented here
    devspace system setup ──sudo──▶ devspace-helper (one operation, exits)
 ```
 
-Status in M5: the daemon serves the IPC protocol, owns the SQLite
+Status in M6: the daemon serves the IPC protocol, owns the SQLite
 database, runs the DNS server, supervises Caddy, the PHP-FPM masters and
 the service servers, and installs runtimes; the CLI uses IPC for the
 daemon lifecycle, the project registry (`devspace project …`), the web
@@ -39,27 +39,30 @@ server (`devspace web …`), the runtimes (`devspace runtime …`,
 `devspace exec`) and the services (`devspace service …`), uses `devspace-core` directly for local,
 daemon-independent commands (configuration, paths), and starts the
 privileged helper through `sudo` for `devspace system setup|teardown`. The
-desktop application is not connected yet (M6).
+desktop application (M6) talks to the daemon through `devspace-ipc` only:
+its Tauri shell exposes a few commands to the Vue interface and starts the
+daemon with the same launcher as the CLI (`devspace_ipc::launcher`).
 
 ## Crates
 
 | Crate | Path | Kind | Responsibility |
 |---|---|---|---|
-| `devspace-platform` | `crates/platform` | lib | **Only** place for platform-specific code: directory conventions, build target, privilege detection, local sockets / named pipes and peer identity, shutdown signals, processes (detach, executable of a pid, stop), path canonicalisation and atomic writes, system integrations (resolver, port forwarding, trust store) and elevation; later service registration. Exposes portable APIs. |
-| `devspace-core` | `crates/core` | lib | Business logic: typed configuration, errors, logging setup, single-instance lock, SQLite storage and migrations, project registry and manifest, web server (pinned Caddy release, archive extraction, sites, Caddy configuration, local CA, DNS answers), archives and downloads, runtimes (signed package index, installation, selection, PHP-FPM configuration), services (plan of the instances, data directories, command lines). No Tauri, no UI, no transport. |
+| `devspace-platform` | `crates/platform` | lib | **Only** place for platform-specific code: directory conventions, single-instance lock of the daemon, build target, privilege detection, local sockets / named pipes and peer identity, shutdown signals, processes (detach, executable of a pid, stop), path canonicalisation and atomic writes, system integrations (resolver, port forwarding, trust store) and elevation; later service registration. Exposes portable APIs. |
+| `devspace-core` | `crates/core` | lib | Business logic: typed configuration, errors, logging setup, SQLite storage and migrations, project registry and manifest, web server (pinned Caddy release, archive extraction, sites, Caddy configuration, local CA, DNS answers), archives and downloads, runtimes (signed package index, installation, selection, PHP-FPM configuration), services (plan of the instances, data directories, command lines). No Tauri, no UI, no transport. |
 | `devspace-helper` | `crates/helper` | lib + bin `devspace-helper` | Privileged helper (bin) and what its callers share with it (lib): typed operations and their command-line encoding, PEM certificates and fingerprints, the local TLD. The lib has no OS code. |
-| `devspace-ipc` | `crates/ipc` | lib | Protocol between daemon and clients: messages, framing, versioning, handshake, typed client and server connections. Re-exports the transport of `devspace-platform`. |
+| `devspace-ipc` | `crates/ipc` | lib | Protocol between daemon and clients: messages, framing, versioning, handshake, time limit of each request, typed client and server connections, and the client-side launcher (start, stop and status of the daemon) shared by the CLI and the desktop application. Re-exports the transport of `devspace-platform`. |
 | `devspace-daemon` | `crates/daemon` | bin `devspaced` | Long-running process owning projects, services and processes. M5: IPC server, lifecycle, database owner, project requests, DNS server, supervision of Caddy, PHP-FPM and the service servers, runtime and service requests. |
 | `devspace-cli` | `crates/cli` | bin `devspace` | Command-line client. |
 | `devspace-registry` | `tools/registry` | bin `devspace-registry` | Maintainer tool: signing key generation, signing and verification of the package index. Never shipped. |
-| `devspace-desktop` | `apps/desktop/src-tauri` | bin + lib | Tauri 2 shell with a Vue 3 / TypeScript frontend. Starter template in M0. |
+| `devspace-desktop` | `apps/desktop/src-tauri` | bin + lib | Tauri 2 shell (commands, menu bar icon, daemon autostart) with a Vue 3 / TypeScript / Tailwind CSS / shadcn-vue interface in `apps/desktop/src`. Depends on `ipc` and `platform` only. |
 
 ### Allowed dependencies between crates
 
 ```
 platform  ←  core  ←  daemon, cli
 platform  ←  ipc   ←  daemon, cli, desktop
-platform  ←  daemon, cli            (signals, processes, system integrations)
+platform  ←  daemon, cli, desktop   (signals, processes, system integrations,
+                                     directories, privileges)
 platform  ←  helper (bin)
 helper (lib)  ←  core, cli
 platform  ←  registry (tool)
@@ -192,7 +195,14 @@ payload, at most 1 MiB, checked before allocation.
 handshake messages never change shape; any other change increments
 `PROTOCOL_VERSION`, and peers only talk when versions are equal.
 
-**Timeouts**: connect 5 s, handshake 5 s (both sides), request 10 s.
+**Timeouts**: connect 5 s, handshake 5 s (both sides); each request has its
+own limit, `Request::time_limit` (10 s for the registry, 45 s for the web
+server, 1 min for lists and removals, 10 min for service start/stop, 15 to
+30 min for downloads), so that every client waits the same time.
+
+**Launcher** (`devspace_ipc::launcher`): `start`, `stop`, `status` and
+`daemon_executable` (`devspaced` next to the running executable), used by
+`devspace daemon …` and by the desktop application.
 
 ### Storage
 
@@ -373,12 +383,37 @@ handshake messages never change shape; any other change increments
   startup when their pid file designates a server program of an installed
   version of the series.
 
+### Desktop application
+
+- `apps/desktop/src-tauri` (Rust): `daemon::Daemon` holds the directories,
+  endpoint and client identity; every operation opens its own connection
+  (the daemon serves connections concurrently, so a download never delays
+  the refresh). Commands: `daemon_status|start|stop`, `daemon_request` (any
+  request of the protocol except `shutdown`, answered with the protocol
+  response), `open_site` and `reveal_project` (URL and directory taken from
+  the daemon, never from the interface). It refuses to run elevated, starts
+  the daemon when the application starts, keeps a menu bar / notification
+  area icon (state, start/stop, open, quit) refreshed every 3 s, and hides
+  the window when it is closed. Quitting leaves the daemon running.
+- `apps/desktop/src` (Vue 3, TypeScript, Tailwind CSS 4, shadcn-vue
+  components in `src/components/ui`): `lib/protocol.ts` mirrors the
+  protocol types by hand (keep in sync with `crates/ipc/src/protocol.rs`);
+  `lib/store.ts` polls while the window is visible: daemon, projects and
+  services every 2 s, web status (it runs system checks) and package index
+  every 10 s, and everything after each action; `lib/actions.ts` runs one
+  action per key with notifications. Pages: Overview (daemon, web server,
+  system integrations, PHP-FPM), Projects, Runtimes, Services.
+- Capabilities: `core:default` and `dialog:allow-open` (folder picker) only;
+  strict CSP (`script-src 'self'`). Privileged operations stay in the CLI:
+  the interface shows the integrations and the `devspace system setup`
+  command.
+
 ### Daemon lifecycle
 
 1. `ensure_unprivileged`, resolve and create directories, load
    configuration, initialise logging.
 2. Take the single-instance lock `<run>/devspaced.lock`
-   (`devspace_core::instance::InstanceLock`, `File::try_lock`). The OS
+   (`devspace_platform::instance::InstanceLock`, `File::try_lock`). The OS
    releases it when the process dies, so a crash never blocks a restart.
    Then open and migrate the database, stop a Caddy and PHP-FPM masters
    left by a crashed daemon, clean the runtime staging area and load the
@@ -392,11 +427,19 @@ handshake messages never change shape; any other change increments
    Caddy and the PHP-FPM masters, drop the runtime (which closes the
    database), release the lock.
 
-`devspace daemon start` spawns `devspaced --background` from the directory of
-the `devspace` executable, detached (`setsid` on Unix, `DETACHED_PROCESS` on
+`devspace daemon start` and the desktop application (`devspace_ipc::launcher::start`)
+spawn `devspaced --background` from the directory of the running executable, detached (`setsid` on Unix, `DETACHED_PROCESS` on
 Windows), with the data directory as working directory, then waits up to
 10 s for the handshake to succeed. `devspace daemon stop` sends `Shutdown`
 and waits up to 10 s for the lock to be released.
+
+`InstanceLock::is_held` briefly takes the lock when it is free, so a probe
+running at the moment another client checks the lock before spawning makes
+that start report an unresponsive daemon. The desktop application
+serialises its own probes, starts and stops; probes from two different
+processes (e.g. `devspace daemon status` during a start from the
+application) can still collide, which only makes that start fail with a
+clear error.
 
 ### Unsafe code
 
@@ -431,7 +474,7 @@ each block having a `SAFETY:` comment.
 | 9 | 2026-11-25 | IPC transport implemented in `devspace-platform` and re-exported by `devspace-ipc`; `ipc` depends on `platform`. | Sockets, pipes and peer credentials are OS-specific; keeps `cfg` out of `ipc` while clients only need `ipc`. |
 | 10 | 2026-11-25 | Hand-written length-prefixed JSON framing instead of `tokio-util` codecs. | ~50 lines, no extra dependency, readable by the TypeScript side later; size limit enforced before allocation. |
 | 11 | 2026-11-25 | Strict protocol version equality, with a handshake whose shape is frozen. | Simple and safe while CLI and daemon ship together; mismatches produce a clear "restart the daemon" error. |
-| 12 | 2026-11-25 | Single-instance lock with `std::fs::File::try_lock` (Rust ≥ 1.89) in `core`. | Portable advisory lock without dependency or `cfg`; released by the OS on crash. |
+| 12 | 2026-11-25 | Single-instance lock with `std::fs::File::try_lock` (Rust ≥ 1.89) in `core` (moved to `platform` in M6, #49). | Portable advisory lock without dependency or `cfg`; released by the OS on crash. |
 | 13 | 2026-11-25 | Daily log rotation with `tracing-appender`, 7 files kept, blocking writer. | Low log volume; avoids the lossy non-blocking writer and its flush guard. |
 | 14 | 2026-11-25 | Runtime directory in `$XDG_RUNTIME_DIR` on Linux, in Application Support on macOS (not `/tmp`). | Per-user, private locations; avoids shared temporary directories. |
 | 15 | 2026-11-25 | `devspace daemon stop` waits for the instance lock rather than for the endpoint to disappear. | The lock is released last, so a `stop` followed by `start` never races with a daemon still draining connections. |
@@ -466,3 +509,8 @@ each block having a `SAFETY:` comment.
 | 44 | 2026-11-26 | PostgreSQL from theseus-rs/postgresql-binaries, MySQL from cdn.mysql.com. | No official relocatable PostgreSQL build exists for macOS and Linux; theseus-rs publishes SHA-256 and GitHub attestations for every target. Oracle publishes MD5 and GPG only: archives hashed at pin time (MD5 cross-checked), then fixed by the signed index. |
 | 45 | 2026-11-26 | `liblzma` (static) for `.tar.xz`. | MySQL's Linux archives are xz only; the reference implementation, built like the bundled SQLite. |
 | 46 | 2026-11-26 | Hard links of tar archives become copies of an already extracted file. | PostgreSQL's time zone data uses them; a copy never designates anything outside the extraction. |
+| 47 | 2026-11-26 | M6 desktop: parity with the CLI except `system setup|teardown`, polling, menu bar icon, daemon started with the application. | Approved by the user; privileged changes keep their terminal approval flow, and polling needs no protocol change. |
+| 48 | 2026-11-26 | Daemon launcher and request time limits moved to `devspace-ipc`. | The desktop must not depend on `core`, and the CLI and the desktop must start and wait for the daemon the same way. |
+| 49 | 2026-11-26 | Single-instance lock moved from `core` to `platform`. | The launcher (in `ipc`, which depends on `platform` only) checks it. |
+| 50 | 2026-11-26 | One generic `daemon_request` command rather than one Tauri command per request; protocol types mirrored by hand in TypeScript. | No business logic in the shell and no duplicated command list; a type generator would add a dependency to `ipc` for about forty types. |
+| 51 | 2026-11-26 | Site URLs and project directories opened by the shell from the daemon's answers; no opener permission for the webview. | The interface cannot make the system open arbitrary URLs or paths. |

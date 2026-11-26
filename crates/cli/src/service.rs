@@ -6,7 +6,6 @@
 
 use std::fmt::Write as _;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use devspace_core::AppPaths;
 use devspace_ipc::{
@@ -15,16 +14,6 @@ use devspace_ipc::{
 
 use crate::client::{self, unexpected};
 use crate::error::CliError;
-
-/// Time limit of `service install` (downloads of a few hundred MB).
-const INSTALL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-
-/// Time limit of `service start|stop` (the first start initialises the
-/// data directory).
-const CHANGE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-
-/// Time limit of `service list`.
-const LIST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Service subcommands.
 #[derive(Debug, Clone, clap::Subcommand)]
@@ -61,34 +50,27 @@ pub enum ServiceCommand {
 /// Runs a service subcommand.
 pub fn execute(command: ServiceCommand, paths: &AppPaths) -> Result<ExitCode, CliError> {
     let endpoint = Endpoint::new(&paths.runtime_dir)?;
-    let (request, timeout, target) = match command {
-        ServiceCommand::List => (Request::ServiceList, LIST_TIMEOUT, None),
+    let (request, target) = match command {
+        ServiceCommand::List => (Request::ServiceList, None),
         ServiceCommand::Install { name, version } => {
             println!(
                 "installing {name} {} (download and verification may take a few minutes)…",
                 version.as_deref().unwrap_or("(newest)")
             );
-            (
-                Request::RuntimeInstall { name, version },
-                INSTALL_TIMEOUT,
-                None,
-            )
+            (Request::RuntimeInstall { name, version }, None)
         }
         ServiceCommand::Start { name, series } => (
             Request::ServiceStart {
                 name: name.clone(),
                 series: series.clone(),
             },
-            CHANGE_TIMEOUT,
             Some((name, series)),
         ),
-        ServiceCommand::Stop { name, series } => {
-            (Request::ServiceStop { name, series }, CHANGE_TIMEOUT, None)
-        }
+        ServiceCommand::Stop { name, series } => (Request::ServiceStop { name, series }, None),
     };
     let response = client::block_on(async {
         let mut client = client::connect(&endpoint).await?;
-        client::request_with_timeout(&mut client, request, timeout).await
+        client::request(&mut client, request).await
     })??;
     match response {
         Response::Services(list) => {

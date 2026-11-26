@@ -9,7 +9,9 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::{Error, Result};
+use crate::PlatformError as Error;
+
+type Result<T> = std::result::Result<T, Error>;
 
 /// Exclusive lock held for the lifetime of the value.
 #[derive(Debug)]

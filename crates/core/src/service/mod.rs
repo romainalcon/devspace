@@ -191,6 +191,7 @@ impl Series {
                     major,
                     minor: None,
                     patch: None,
+                    build: None,
                 }),
             ) => Some(Self { major, minor: None }),
             (
@@ -199,6 +200,7 @@ impl Series {
                     major,
                     minor: Some(minor),
                     patch: None,
+                    build: None,
                 }),
             ) => Some(Self {
                 major,

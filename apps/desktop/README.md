@@ -1,7 +1,28 @@
-# Tauri + Vue + TypeScript
+# DevSpace desktop
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+Tauri 2 shell (`src-tauri`) and Vue 3 / TypeScript / Tailwind CSS 4 /
+shadcn-vue interface (`src`). The application only talks to the daemon
+through the IPC protocol; see `ARCHITECTURE.md` (Desktop application).
 
-## Recommended IDE Setup
+## Development
 
-- [VS Code](https://code.visualstudio.com/) + [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+```sh
+cargo build -p devspace-daemon -p devspace-cli   # devspaced next to the app
+cd apps/desktop
+npm install
+npx tauri dev
+```
+
+The application starts `devspaced` from its own directory (the workspace
+`target/debug` in development). `DEVSPACE_HOME` and `DEVSPACE_LOG` are
+honoured, and passed on to the daemon it starts.
+
+## Checks
+
+```sh
+npm run build        # vue-tsc type-check + vite build
+cargo test -p devspace-desktop
+```
+
+Components in `src/components/ui` come from shadcn-vue (`components.json`,
+style `new-york`, base colour `neutral`).

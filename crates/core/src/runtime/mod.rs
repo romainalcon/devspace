@@ -177,9 +177,10 @@ impl<'de> Deserialize<'de> for Version {
     }
 }
 
-/// Versions accepted by a project: `MAJOR`, `MAJOR.MINOR` or
-/// `MAJOR.MINOR.PATCH` (which also accepts the rebuilds of that patch
-/// version). The newest matching version is used.
+/// Versions accepted by a project or an installation request: `MAJOR`,
+/// `MAJOR.MINOR`, `MAJOR.MINOR.PATCH` (which also accepts the rebuilds of
+/// that patch version) or an exact rebuild `MAJOR.MINOR.PATCH.BUILD`. The
+/// newest matching version is used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VersionReq {
     /// Required major version.
@@ -188,6 +189,8 @@ pub struct VersionReq {
     pub minor: Option<u32>,
     /// Required patch version, if any (only with a minor version).
     pub patch: Option<u32>,
+    /// Required rebuild, if any (only with a patch version).
+    pub build: Option<u32>,
 }
 
 impl VersionReq {
@@ -197,14 +200,18 @@ impl VersionReq {
     ///
     /// Returns a description of the expected forms.
     pub fn parse(text: &str) -> Result<Self, String> {
-        let (major, minor, patch) = match parse_numbers(text).as_deref() {
-            Some(&[major]) => (major, None, None),
-            Some(&[major, minor]) => (major, Some(minor), None),
-            Some(&[major, minor, patch]) => (major, Some(minor), Some(patch)),
+        let (major, minor, patch, build) = match parse_numbers(text).as_deref() {
+            Some(&[major]) => (major, None, None, None),
+            Some(&[major, minor]) => (major, Some(minor), None, None),
+            Some(&[major, minor, patch]) => (major, Some(minor), Some(patch), None),
+            // Build numbers are never 0 (see [`Version`]).
+            Some(&[major, minor, patch, build]) if build > 0 => {
+                (major, Some(minor), Some(patch), Some(build))
+            }
             _ => {
                 return Err(format!(
-                    "invalid version `{text}`; expected MAJOR, MAJOR.MINOR or MAJOR.MINOR.PATCH, \
-                     such as `8.4`"
+                    "invalid version `{text}`; expected MAJOR, MAJOR.MINOR, MAJOR.MINOR.PATCH \
+                     or MAJOR.MINOR.PATCH.BUILD, such as `8.4`"
                 ));
             }
         };
@@ -212,6 +219,7 @@ impl VersionReq {
             major,
             minor,
             patch,
+            build,
         })
     }
 
@@ -221,6 +229,7 @@ impl VersionReq {
         self.major == version.major
             && self.minor.is_none_or(|minor| minor == version.minor)
             && self.patch.is_none_or(|patch| patch == version.patch)
+            && self.build.is_none_or(|build| build == version.build)
     }
 
     /// Newest of `versions` satisfying the requirement.
@@ -237,6 +246,9 @@ impl fmt::Display for VersionReq {
         }
         if let Some(patch) = self.patch {
             write!(f, ".{patch}")?;
+        }
+        if let Some(build) = self.build {
+            write!(f, ".{build}")?;
         }
         Ok(())
     }
@@ -501,13 +513,18 @@ mod tests {
         assert!(req("8.4.23").matches(v("8.4.23")));
         assert!(!req("8.4.23").matches(v("8.4.28")));
         assert!(req("8.4.13").matches(v("8.4.13.1")));
+        // Exact rebuilds, as published in the index (MySQL `9.7.4.1`).
+        assert!(req("9.7.4.1").matches(v("9.7.4.1")));
+        assert!(!req("9.7.4.1").matches(v("9.7.4.2")));
+        assert!(!req("9.7.4.1").matches(v("9.7.4")));
+        assert_eq!(req("9.7.4.1").to_string(), "9.7.4.1");
         assert_eq!(
             req("8.4").best([v("8.4.9"), v("8.4.23"), v("8.5.8")]),
             Some(v("8.4.23"))
         );
         assert_eq!(req("7").best([v("8.4.9")]), None);
         assert_eq!(req("8.4").to_string(), "8.4");
-        for bad in ["", "latest", "8.x", "^8.4", "8.4.1.0"] {
+        for bad in ["", "latest", "8.x", "^8.4", "8.4.1.0", "8.4.1.1.1"] {
             assert!(VersionReq::parse(bad).is_err(), "{bad}");
         }
     }
