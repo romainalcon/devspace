@@ -361,7 +361,13 @@ raised), still none on macOS x86_64.
   clippy 1.100 (`chunks_exact_to_as_chunks`); test helpers only used by
   macOS/Unix tests failed on Linux and Windows (dead code, M3–M7, never
   run before); CI clippy runs with `--keep-going`.
-- ⏳ First `Release` run (tag `v0.1.0`).
+- ✅ First `Release` run (tag `v0.1.0`, 2026-11-26): bundles built on the
+  five targets, draft release with `latest.json` and updater signatures;
+  `devspaced`, `devspace` and `devspace-helper` checked in the `.app`
+  and the `.deb` (`/usr/bin`). Fix from it: an MSI was also built (per
+  machine, without the `PATH` hooks) and offered as the default Windows
+  update; Windows bundles are NSIS only, the draft was rebuilt.
+- ⏳ Draft `v0.1.0` published by the maintainer.
 - ⏳ Real `system setup|teardown` with sudo and from the application
   (needs the user's password); update installed from a published release.
 - ✅ First CI runs on the five platforms: clippy and tests pass on macOS
@@ -375,8 +381,8 @@ raised), still none on macOS x86_64.
   refuses to run elevated: the end-to-end tests of the daemon are skipped
   there, so the daemon has still never run on Windows. The M1 to M5
   Windows warnings (named pipe ACL, servers, stop) stand.
-- ⚠️ Windows and Linux bundles, the NSIS `PATH` hooks and the Windows stop
-  commands have never run (first `Release` run pending). The Valkey Linux
+- ⚠️ The Windows and Linux bundles were built but never installed; the
+  NSIS `PATH` hooks and the Windows stop commands have never run. The Valkey Linux
   builds start and answer `PING` in the `Packages` workflow.
 - ⚠️ `system setup` dry-run refuses while Caddy is not installed (same
   rule as setup, M3).
