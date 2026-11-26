@@ -402,6 +402,7 @@ mod tests {
     use super::*;
     use crate::AppPaths;
     use crate::runtime::{RuntimeName, Version};
+    #[cfg(unix)]
     use crate::service::Series;
 
     fn setup(name: RuntimeName, version: &str, root: &Path) -> (InstalledRuntime, ServiceLayout) {
@@ -419,6 +420,7 @@ mod tests {
         (runtime, ServiceLayout::new(&AppPaths::from_root(root)))
     }
 
+    #[cfg(unix)]
     fn args(invocation: &Invocation) -> Vec<String> {
         invocation
             .args

@@ -501,6 +501,7 @@ mod tests {
     use super::*;
     use crate::AppPaths;
     use crate::runtime::index::tests::{SAMPLE, TestSigner};
+    #[cfg(unix)]
     use crate::runtime::list_installed;
 
     fn index() -> Index {
@@ -549,6 +550,7 @@ mod tests {
     }
 
     /// Index of one PHP package whose archive is `archive`.
+    #[cfg(unix)]
     fn local_index(archive: &Path) -> Index {
         let sha256 = crate::download::sha256_file(archive).unwrap();
         let size = fs::metadata(archive).unwrap().len();
@@ -571,6 +573,7 @@ mod tests {
         .unwrap()
     }
 
+    #[cfg(unix)]
     fn copy_from(source: PathBuf) -> impl Fn(&PackageArchive, &Path) -> Result<()> {
         move |_, dest| {
             fs::copy(&source, dest).map_err(install_error(dest))?;
@@ -578,6 +581,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn assert_no_leftovers(layout: &RuntimeLayout) {
         let leftovers: Vec<_> = fs::read_dir(layout.staging_dir()).unwrap().collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");

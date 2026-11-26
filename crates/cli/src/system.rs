@@ -578,6 +578,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn bundled(helper: IntegrationState, link: IntegrationState) -> LocalInstall {
         LocalInstall {
             bundled_helper: "/Applications/DevSpace.app/Contents/MacOS/devspace-helper".into(),
@@ -593,6 +594,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn operations(plan: &[Step]) -> Vec<&'static str> {
         plan.iter().map(|step| step.operation.name()).collect()
     }
